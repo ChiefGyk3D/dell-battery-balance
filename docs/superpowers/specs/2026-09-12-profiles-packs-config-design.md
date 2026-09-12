@@ -402,8 +402,12 @@ RestrictRealtime=yes
 `config.toml` and `config.toml.bak` `0664`, so `config apply` running as the
 scoped user can write them.
 
-**Applet actions.** `pkexec --user dell-battery-balance /usr/local/bin/dell-battery-balance …`.
-Two polkit actions, both annotated with the same exec path:
+**Applet actions.** pkexec selects a polkit action by the executable's
+path, so there are two thin wrappers, `/usr/local/libexec/dbb-control` and
+`/usr/local/libexec/dbb-configure`, each `exec`ing the tool with an internal
+`--polkit-class control|configure` flag. The applet runs
+`pkexec --user dell-battery-balance /usr/local/libexec/dbb-<class> …`.
+Two polkit actions, one per wrapper:
 
 | Action | Used for | `allow_active` default |
 |---|---|---|
@@ -413,11 +417,10 @@ Two polkit actions, both annotated with the same exec path:
 `control` is deliberately the user's own password rather than none: a
 profile switch can park both packs at 100% for days, which is the exact
 harm the tool exists to prevent. Loosening to `yes` is one line in
-`/etc/polkit-1/rules.d/` for anyone who prefers it. The action a subcommand
-maps to is decided by the tool itself (it refuses `configure`-class
-subcommands unless invoked under that action id, checked via
-`PKEXEC_UID` plus the action passed as `--polkit-action`), so the applet
-cannot use the cheaper prompt for the more consequential write.
+`/etc/polkit-1/rules.d/` for anyone who prefers it. The tool enforces the split
+itself: under `--polkit-class control` it refuses configure-class
+subcommands (exit 3), so the applet cannot route the more consequential
+write through the cheaper prompt.
 
 **BIOS admin password.** If `general.bios_password_file` is set, the file
 must be `dell-battery-balance:dell-battery-balance 0400`, and the grant
@@ -428,7 +431,7 @@ in an argument or environment.
 
 - Section 3 step 5 and Section 6.1: the "root last read back" wording becomes
   "the service last read back"; unchanged in substance.
-- Section 4: `--polkit-action` is an internal flag, hidden from `--help`.
+- Section 4: `--polkit-class` is an internal flag, hidden from `--help`; the wrappers set it.
 - `install.sh`: creates the account, installs the grant script, udev rule and
   both polkit actions, chowns the directories, reloads udev, and runs the
   grant once. Uninstall reverses all of it including the account.
