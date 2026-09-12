@@ -132,7 +132,8 @@ Everything durable lives in `/var/lib/dell-battery-balance`:
 The next version adds usage profiles (daily / field / travel / storage /
 custom), a system-wide `config.toml`, a pack registry that tracks wear per
 physical pack across swaps and rotations, safe auto-revert out of field mode,
-and a full Plasma config dialog. The design is written up in
+a full Plasma config dialog, and a scoped service account so that nothing
+which parses input or writes firmware values runs as root. The design is written up in
 [docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md](docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md),
 including the measured hardware constraint that drives it: these packs expose
 no per-unit identity, so swaps are detected and confirmed rather than

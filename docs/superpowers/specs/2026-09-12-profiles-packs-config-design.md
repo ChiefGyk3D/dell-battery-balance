@@ -328,3 +328,115 @@ KConfig so a restart does not re-notify.
   removal; external charging on the shelf is invisible.
 - `charge_full` health tracking depends on firmware recalibration cadence.
 - Notifications require the applet to be running.
+
+## 10. Privilege model — scoped service user
+
+### 10.1 What actually needs privilege
+
+Measured 2026-09-12. Everything the tool *reads* about the packs under
+`/sys/class/power_supply/` is world-readable already. Privilege is needed
+only for:
+
+| File | Mode today | Needed |
+|---|---|---|
+| `dell-wmi-sysman/attributes/{PrimaryBattChargeCfg,CustomChargeStart,CustomChargeStop,SliceBattChargeCfg,SliceBattCustomChargeStart,SliceBattCustomChargeStop}/current_value` | `0600 root` | read + write |
+| `power_supply/BAT0/charge_control_{start,end}_threshold` | `0644 root` | write |
+| `dell-wmi-sysman/authentication/Admin/current_password` | `0200 root` | write, **only if** a BIOS admin password is set |
+
+Eight files. Root also reaches the other 156 sysman attributes — boot order,
+password lockout, HTTPS boot, USB4/PCIe — none of which this tool has any
+business touching.
+
+### 10.2 Design
+
+**Account.** A system user and group `dell-battery-balance` (`--system`,
+`nologin`, home = the state directory). Nothing else is a member; the
+interactive user is *not* added, so the applet stays unprivileged and the
+grant cannot be exercised by arbitrary user processes.
+
+**Grant script.** `/usr/local/libexec/dell-battery-balance-grant`, root-owned
+`0755`, ~15 lines: for each path in a hard-coded allowlist (the table above),
+`chgrp dell-battery-balance` and `chmod g+rw` (`g+w` only for
+`current_password`). It touches nothing outside the allowlist and is
+idempotent. It is the only root code in the system after install.
+
+**When it runs.** Sysfs permissions do not persist across boot, so both:
+
+- `ExecStartPre=+/usr/local/libexec/dell-battery-balance-grant` on the tick
+  service. The `+` prefix runs that one line as root; the tick itself then
+  runs as the scoped user. Self-healing every two minutes.
+- `/etc/udev/rules.d/90-dell-battery-balance.rules`, matching
+  `SUBSYSTEM=="firmware-attributes", KERNEL=="dell-wmi-sysman", ACTION=="add"`
+  and `SUBSYSTEM=="power_supply", KERNEL=="BAT0", ACTION=="add"`, both
+  `RUN+=` the grant script — so an applet click before the first tick after
+  boot also works.
+
+**Service unit.**
+
+```ini
+[Service]
+Type=oneshot
+User=dell-battery-balance
+Group=dell-battery-balance
+ExecStartPre=+/usr/local/libexec/dell-battery-balance-grant
+ExecStart=/usr/local/bin/dell-battery-balance tick
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dell-battery-balance /etc/dell-battery-balance
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+# NOT ProtectKernelTunables: it would remount /sys read-only and defeat the
+# whole purpose. DAC on the eight granted files is the boundary.
+```
+
+**Directories.** `/var/lib/dell-battery-balance` owned
+`dell-battery-balance:dell-battery-balance 0755`, files `0644` (applet reads).
+`/etc/dell-battery-balance` owned `root:dell-battery-balance 2775`,
+`config.toml` and `config.toml.bak` `0664`, so `config apply` running as the
+scoped user can write them.
+
+**Applet actions.** `pkexec --user dell-battery-balance /usr/local/bin/dell-battery-balance …`.
+Two polkit actions, both annotated with the same exec path:
+
+| Action | Used for | `allow_active` default |
+|---|---|---|
+| `…control` | `profile set`, `field`, `restore`, `balance --apply`, `pack same/assign/new` | `auth_self_keep` |
+| `…configure` | `config apply`, `profile create/edit/delete`, `pack rename/retire`, `reset` | `auth_admin_keep` |
+
+`control` is deliberately the user's own password rather than none: a
+profile switch can park both packs at 100% for days, which is the exact
+harm the tool exists to prevent. Loosening to `yes` is one line in
+`/etc/polkit-1/rules.d/` for anyone who prefers it. The action a subcommand
+maps to is decided by the tool itself (it refuses `configure`-class
+subcommands unless invoked under that action id, checked via
+`PKEXEC_UID` plus the action passed as `--polkit-action`), so the applet
+cannot use the cheaper prompt for the more consequential write.
+
+**BIOS admin password.** If `general.bios_password_file` is set, the file
+must be `dell-battery-balance:dell-battery-balance 0400`, and the grant
+script adds `current_password` to its allowlist. The password never appears
+in an argument or environment.
+
+### 10.3 What this changes elsewhere
+
+- Section 3 step 5 and Section 6.1: the "root last read back" wording becomes
+  "the service last read back"; unchanged in substance.
+- Section 4: `--polkit-action` is an internal flag, hidden from `--help`.
+- `install.sh`: creates the account, installs the grant script, udev rule and
+  both polkit actions, chowns the directories, reloads udev, and runs the
+  grant once. Uninstall reverses all of it including the account.
+- Migration from the current root-run install: `install.sh` chowns the
+  existing state directory; nothing else carries over.
+
+### 10.4 Residual root
+
+After install, root runs only the grant script (per tick and per udev add).
+Everything that parses input, reads config, or writes firmware values runs
+as the scoped user with DAC access to eight files and two directories.
