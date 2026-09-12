@@ -534,6 +534,74 @@ def fmt_status(state, s):
     return "\n".join(lines)
 
 
+def state_json(state, s):
+    """Machine-readable view of everything `status` prints, for the applet."""
+    slots = state.get("slots", {})
+    out = {
+        "ts": now_iso(),
+        "ac_online": s["ac_online"],
+        "bats": {},
+        "sessions": state.get("sessions", 0),
+        "drain_first": state.get("discharge_first", {}),
+        "policy": state.get("policy"),
+        "field_mode": bool(state.get("policy")
+                           and state["policy"].get("mode") == "field"),
+    }
+
+    for b in BATS:
+        v = s["bats"].get(b)
+        if not v:
+            out["bats"][b] = {"present": False}
+            continue
+        slot = slots.get(b)
+        applied = read_applied(b)
+        entry = {
+            "present": True,
+            "capacity": v["capacity"],
+            "status": v["status"],
+            "temp_c": (v["temp_dc"] / 10.0) if v["temp_dc"] is not None else None,
+            "mode": applied.get("mode"),
+            "start": applied.get("start"),
+            "stop": applied.get("stop"),
+            "efc": None,
+            "calendar_score": None,
+            "mean_soc": None,
+            "pct_ge90": None,
+            "discharged_wh": None,
+        }
+        if slot:
+            entry["efc"] = round(efc(slot), 3)
+            entry["calendar_score"] = round(slot["calendar_score"], 2)
+            entry["discharged_wh"] = round(
+                wh(slot["discharge_uah"], v["voltage_min_design_uv"]), 2)
+            if slot["soc_hours"]:
+                entry["mean_soc"] = round(
+                    slot["soc_hours_sum"] / slot["soc_hours"], 1)
+            if slot["seconds_observed"]:
+                entry["pct_ge90"] = round(
+                    100.0 * slot["seconds_ge_90"] / slot["seconds_observed"], 1)
+        out["bats"][b] = entry
+
+    both = [b for b in BATS if b in slots]
+    if len(both) == 2:
+        out["divergence_efc"] = round(
+            abs(efc(slots[both[0]]) - efc(slots[both[1]])), 3)
+        out["divergence_calendar"] = round(
+            abs(slots[both[0]]["calendar_score"]
+                - slots[both[1]]["calendar_score"]), 2)
+    else:
+        out["divergence_efc"] = None
+        out["divergence_calendar"] = None
+
+    roles, why = decide_roles(state, DEFAULT_DEADBAND)
+    out["recommendation"] = {
+        "why": why,
+        "roles": roles,
+        "bands": {b: DEFAULT_BANDS[r] for b, r in (roles or {}).items()},
+    }
+    return out
+
+
 # --------------------------------------------------------------------------
 # commands
 # --------------------------------------------------------------------------
@@ -552,7 +620,11 @@ def cmd_sample(args):
 
 
 def cmd_status(args):
-    print(fmt_status(load_state(), sample_all()))
+    state, s = load_state(), sample_all()
+    if args.json:
+        print(json.dumps(state_json(state, s), indent=2, sort_keys=True))
+    else:
+        print(fmt_status(state, s))
 
 
 def cmd_report(args):
@@ -654,7 +726,10 @@ def main():
     sp.add_argument("--no-log", action="store_true", help="update state but skip the CSV")
     sp.set_defaults(func=cmd_sample)
 
-    sub.add_parser("status", help="wear summary").set_defaults(func=cmd_status)
+    sp = sub.add_parser("status", help="wear summary")
+    sp.add_argument("--json", action="store_true",
+                    help="machine-readable output (used by the Plasma applet)")
+    sp.set_defaults(func=cmd_status)
     sub.add_parser("report", help="detailed analysis").set_defaults(func=cmd_report)
 
     sp = sub.add_parser("balance", help="apply the charge-ceiling policy")

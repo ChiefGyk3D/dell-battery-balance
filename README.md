@@ -95,6 +95,30 @@ sudo dell-battery-balance restore    # back to the balancing policy
 If a BIOS admin password is set, pass `--bios-password` or set
 `DBB_BIOS_PASSWORD` (an `EnvironmentFile` hook is stubbed in the unit).
 
+## Plasma applet
+
+A Plasma 6 tray widget lives in `plasmoid/`. It sits next to the battery icon
+and shows each pack's EFC and calendar score, the measured EC drain order, the
+active policy, and buttons for Balance / Field / Restore. Privileged actions
+go through `pkexec` against the polkit action in `polkit/`, so no terminal and
+no passwordless sudo is needed.
+
+`install.sh` installs both. To do the applet by hand:
+
+```sh
+kpackagetool6 --type Plasma/Applet --install plasmoid/package    # or --upgrade
+sudo install -Dm644 polkit/com.chiefgyk3d.dellbatterybalance.policy \
+    /usr/share/polkit-1/actions/com.chiefgyk3d.dellbatterybalance.policy
+```
+
+Then: right-click the panel or system tray, Add Widgets, search for
+"Dell Battery Balance". Test it standalone with
+`plasmawindowed com.chiefgyk3d.dellbatterybalance`.
+
+Field mode is flagged in two places on purpose — a red dot on the tray icon
+and a warning banner in the popup — because it disables the calendar-wear
+protection and is otherwise easy to leave on by accident.
+
 ## State
 
 Everything durable lives in `/var/lib/dell-battery-balance`:

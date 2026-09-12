@@ -17,11 +17,27 @@ for u in "$src"/systemd/*.service "$src"/systemd/*.timer; do
     install -Dm644 "$u" "/etc/systemd/system/$(basename "$u")"
 done
 
+# Polkit action, so the Plasma applet can apply ceilings without a terminal.
+install -Dm644 "$src/polkit/com.chiefgyk3d.dellbatterybalance.policy" \
+    /usr/share/polkit-1/actions/com.chiefgyk3d.dellbatterybalance.policy
+
 systemctl daemon-reload
 systemctl enable --now dell-battery-balance-sample.timer
+
+# The Plasma applet is per-user, so it must not be installed as root.
+if [[ -n "${SUDO_USER:-}" ]] && command -v kpackagetool6 >/dev/null; then
+    echo "Installing the Plasma applet for $SUDO_USER..."
+    sudo -u "$SUDO_USER" kpackagetool6 --type Plasma/Applet \
+        --upgrade "$src/plasmoid/package" 2>/dev/null \
+        || sudo -u "$SUDO_USER" kpackagetool6 --type Plasma/Applet \
+            --install "$src/plasmoid/package"
+fi
 
 echo
 echo "Installed. Sampling is live; the balancing timer is NOT enabled yet."
 echo "Let it gather a week of data first, then:"
 echo "    dell-battery-balance report"
 echo "    systemctl enable --now dell-battery-balance.timer"
+echo
+echo "Plasma applet: right-click the panel or system tray -> Add Widgets"
+echo "               -> search \"Dell Battery Balance\"."

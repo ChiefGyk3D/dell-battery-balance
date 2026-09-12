@@ -1,0 +1,19 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "ChiefGyk3D"
+            }
+        ],
+        "Category": "System Information",
+        "Description": "Per-pack wear tracking and charge-ceiling control for dual-battery Dell Latitude Rugged laptops",
+        "Icon": "battery-profile-powersave",
+        "Id": "com.chiefgyk3d.dellbatterybalance",
+        "License": "GPL-3.0-or-later",
+        "Name": "Dell Battery Balance",
+        "Version": "1.0",
+        "Website": "https://github.com/ChiefGyk3D/dell-battery-balance"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0"
+}
