@@ -165,9 +165,17 @@ def blank_slot(design_uah):
 
 
 def load_state():
-    if STATE_FILE.exists():
+    try:
+        exists = STATE_FILE.exists()
+    except PermissionError:
+        sys.exit(f"error: cannot read {STATE_DIR} as this user.\n"
+                 f"       Fix the install with: sudo chmod 755 {STATE_DIR}")
+    if exists:
         try:
             return json.loads(STATE_FILE.read_text())
+        except PermissionError:
+            sys.exit(f"error: cannot read {STATE_FILE} as this user.\n"
+                     f"       Fix the install with: sudo chmod 644 {STATE_FILE}")
         except (OSError, json.JSONDecodeError) as e:
             sys.exit(f"error: cannot read {STATE_FILE}: {e}")
     return {
@@ -186,6 +194,18 @@ def save_state(state):
     tmp = STATE_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, indent=2, sort_keys=True))
     os.replace(tmp, STATE_FILE)
+    # Only root writes, but any user must be able to read `status`/`report`.
+    # Battery telemetry carries nothing sensitive.
+    _make_readable(STATE_DIR, 0o755)
+    _make_readable(STATE_FILE, 0o644)
+
+
+def _make_readable(path, mode):
+    """Best effort; a non-root caller simply cannot, and does not need to."""
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
 
 
 def append_log(s):
@@ -209,6 +229,7 @@ def append_log(s):
                 "current_now_ua": v["current_now_ua"],
                 "temp_dc": v["temp_dc"],
             })
+    _make_readable(SAMPLE_LOG, 0o644)
 
 
 # --------------------------------------------------------------------------

@@ -11,7 +11,7 @@ src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 install -Dm755 "$src/dell-battery-balance" /usr/local/bin/dell-battery-balance
 install -Dm644 "$src/README.md" /usr/local/share/doc/dell-battery-balance/README.md
-install -d -m750 /var/lib/dell-battery-balance
+install -d -m755 /var/lib/dell-battery-balance
 
 for u in "$src"/systemd/*.service "$src"/systemd/*.timer; do
     install -Dm644 "$u" "/etc/systemd/system/$(basename "$u")"
