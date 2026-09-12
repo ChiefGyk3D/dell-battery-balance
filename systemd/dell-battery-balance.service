@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply Dell dual-battery wear-balancing charge ceilings
+Documentation=file:/usr/local/share/doc/dell-battery-balance/README.md
+ConditionPathExists=/sys/class/power_supply/BAT1
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dell-battery-balance balance --apply
+# Uncomment if a BIOS admin password is set:
+# Environment=DBB_BIOS_PASSWORD=...
+# ...or better, keep it out of the unit file:
+# EnvironmentFile=-/etc/default/dell-battery-balance

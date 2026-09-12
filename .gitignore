@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+# Local run artifacts, if the state dir is ever pointed here for testing
+state.json
+state.json.tmp
+samples.csv

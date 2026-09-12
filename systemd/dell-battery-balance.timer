@@ -1,0 +1,10 @@
+[Unit]
+Description=Re-evaluate Dell dual-battery charge ceilings daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

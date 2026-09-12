@@ -1,0 +1,658 @@
+#!/usr/bin/env python3
+#
+# dell-battery-balance - wear tracking and charge-ceiling balancing for the
+# two battery packs in a Dell Latitude Rugged.
+#
+# Copyright (C) 2026 ChiefGyk3D
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version. See the LICENSE file for the full text.
+#
+"""Track and equalize wear across the two packs in a Dell Latitude Rugged.
+
+The embedded controller charges and discharges the primary and slice packs
+sequentially, not in parallel. One pack therefore takes nearly all the cycle
+wear while the other floats near 100% state of charge -- the worst calendar
+aging condition for Li-ion. Neither pack reports cycle_count on this platform
+(dell_wmi_ddv does not extend it), so this tool derives wear itself by
+integrating charge flow, then moves the charge ceilings to shift work off
+whichever pack is ahead.
+
+Modes:
+  sample    one measurement, appended to the log (drive from a systemd timer)
+  status    human-readable wear summary
+  report    detailed analysis, including which pack the EC drains first
+  balance   apply the charge-ceiling policy (use --apply to actually write)
+  field     lift both ceilings for maximum runtime
+  restore   return to the balancing policy after field mode
+"""
+
+import argparse
+import csv
+import json
+import math
+import os
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+PS = Path("/sys/class/power_supply")
+SYSMAN = Path("/sys/class/firmware-attributes/dell-wmi-sysman")
+BATS = ("BAT0", "BAT1")
+
+# Slot -> the dell-wmi-sysman attribute names that control it.
+SYSMAN_ATTRS = {
+    "BAT0": ("PrimaryBattChargeCfg", "CustomChargeStart", "CustomChargeStop"),
+    "BAT1": ("SliceBattChargeCfg", "SliceBattCustomChargeStart", "SliceBattCustomChargeStop"),
+}
+
+STATE_DIR = Path(os.environ.get("DBB_STATE_DIR", "/var/lib/dell-battery-balance"))
+STATE_FILE = STATE_DIR / "state.json"
+SAMPLE_LOG = STATE_DIR / "samples.csv"
+
+# Firmware clamps: stop is 55-100, start is 50-95, and start must stay below stop.
+STOP_MIN, STOP_MAX = 55, 100
+START_MIN, START_MAX = 50, 95
+
+# Charge ceilings per role. "protect" is the pack that is ahead on wear.
+DEFAULT_BANDS = {
+    "protect": (50, 60),
+    "work": (80, 90),
+    "neutral": (50, 80),
+    "field": (90, 100),
+}
+
+# Divergence in equivalent full cycles that must accumulate before roles flip.
+# Hysteresis: without it the policy would oscillate every sample.
+DEFAULT_DEADBAND = 0.5
+
+# A sample gap longer than this is recorded but flagged; the machine was
+# probably off or suspended.
+GAP_FLAG_SECONDS = 900
+
+CSV_FIELDS = [
+    "ts", "boot_id", "ac_online", "bat", "status", "capacity",
+    "charge_now_uah", "charge_full_uah", "voltage_now_uv",
+    "current_now_ua", "temp_dc",
+]
+
+
+# --------------------------------------------------------------------------
+# sysfs helpers
+# --------------------------------------------------------------------------
+
+def read_str(path):
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return None
+
+
+def read_int(path):
+    v = read_str(path)
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except ValueError:
+        return None
+
+
+def boot_id():
+    return read_str(Path("/proc/sys/kernel/random/boot_id")) or "unknown"
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def require_root(action):
+    if os.geteuid() != 0:
+        sys.exit(f"error: {action} needs root (sysfs battery controls are root-only)")
+
+
+# --------------------------------------------------------------------------
+# measurement
+# --------------------------------------------------------------------------
+
+def sample_all():
+    """One synchronous read of both packs plus AC state."""
+    ac = read_int(PS / "AC" / "online")
+    out = {
+        "ts": time.time(),
+        "boot_id": boot_id(),
+        "ac_online": ac,
+        "bats": {},
+    }
+    for b in BATS:
+        d = PS / b
+        if not d.exists() or read_int(d / "present") != 1:
+            continue
+        out["bats"][b] = {
+            "status": read_str(d / "status"),
+            "capacity": read_int(d / "capacity"),
+            "charge_now_uah": read_int(d / "charge_now"),
+            "charge_full_uah": read_int(d / "charge_full"),
+            "charge_full_design_uah": read_int(d / "charge_full_design"),
+            "voltage_now_uv": read_int(d / "voltage_now"),
+            "voltage_min_design_uv": read_int(d / "voltage_min_design"),
+            "current_now_ua": read_int(d / "current_now"),
+            "temp_dc": read_int(d / "temp"),
+        }
+    return out
+
+
+# --------------------------------------------------------------------------
+# state
+# --------------------------------------------------------------------------
+
+def blank_slot(design_uah):
+    return {
+        "design_uah": design_uah,
+        "discharge_uah": 0.0,      # cumulative charge out -> drives EFC
+        "charge_uah": 0.0,         # cumulative charge in, for sanity checks
+        "calendar_score": 0.0,     # SoC- and temperature-weighted hours
+        "soc_hours": 0.0,          # plain hours observed, for averaging
+        "soc_hours_sum": 0.0,      # SoC-weighted hours, for mean SoC
+        "seconds_ge_90": 0.0,
+        "seconds_observed": 0.0,
+        "samples": 0,
+        "first_seen": now_iso(),
+    }
+
+
+def load_state():
+    if STATE_FILE.exists():
+        try:
+            return json.loads(STATE_FILE.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            sys.exit(f"error: cannot read {STATE_FILE}: {e}")
+    return {
+        "version": 1,
+        "created": now_iso(),
+        "slots": {},
+        "last": None,
+        "discharge_first": {b: 0 for b in BATS},
+        "sessions": 0,
+        "policy": None,
+    }
+
+
+def save_state(state):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True))
+    os.replace(tmp, STATE_FILE)
+
+
+def append_log(s):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    new = not SAMPLE_LOG.exists()
+    with SAMPLE_LOG.open("a", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
+        if new:
+            w.writeheader()
+        for b, v in s["bats"].items():
+            w.writerow({
+                "ts": f"{s['ts']:.0f}",
+                "boot_id": s["boot_id"],
+                "ac_online": s["ac_online"],
+                "bat": b,
+                "status": v["status"],
+                "capacity": v["capacity"],
+                "charge_now_uah": v["charge_now_uah"],
+                "charge_full_uah": v["charge_full_uah"],
+                "voltage_now_uv": v["voltage_now_uv"],
+                "current_now_ua": v["current_now_ua"],
+                "temp_dc": v["temp_dc"],
+            })
+
+
+# --------------------------------------------------------------------------
+# wear model
+# --------------------------------------------------------------------------
+
+def calendar_stress(soc_pct, temp_c):
+    """Relative calendar-aging rate versus a 50% SoC / 25 C baseline.
+
+    Heuristic, not a datasheet curve: Li-ion calendar fade rises steeply with
+    state of charge and roughly doubles per 10 C (Arrhenius rule of thumb).
+    Used only to compare the two packs against each other, so the absolute
+    scale does not matter -- both packs are measured the same way.
+    """
+    soc_term = 1.0 + 3.0 * max(0.0, (soc_pct - 50.0) / 50.0) ** 2
+    temp_term = 2.0 ** ((temp_c - 25.0) / 10.0)
+    return soc_term * temp_term
+
+
+def efc(slot):
+    """Equivalent full cycles: cumulative charge out / design capacity."""
+    if not slot.get("design_uah"):
+        return 0.0
+    return slot["discharge_uah"] / slot["design_uah"]
+
+
+def integrate(state, s):
+    """Fold one sample into the cumulative counters."""
+    last = state.get("last")
+    state.setdefault("slots", {})
+
+    for b, v in s["bats"].items():
+        design = v["charge_full_design_uah"]
+        slot = state["slots"].get(b)
+        if slot is None:
+            slot = blank_slot(design)
+            state["slots"][b] = slot
+        # A different pack in the slot invalidates the running totals. These
+        # packs report an identical serial ("88") and ePPID, so a design
+        # capacity change is the only automatic signal available.
+        if design and slot.get("design_uah") and design != slot["design_uah"]:
+            print(f"warning: {b} design capacity changed "
+                  f"({slot['design_uah']} -> {design} uAh); pack may have been "
+                  f"swapped. Run --reset-slot {b} to restart its counters.",
+                  file=sys.stderr)
+        slot["samples"] += 1
+
+    if not last:
+        state["last"] = s
+        return {"counted": False, "reason": "first sample"}
+
+    dt = s["ts"] - last["ts"]
+    if dt <= 0:
+        return {"counted": False, "reason": "clock went backwards"}
+
+    gap = dt > GAP_FLAG_SECONDS
+    first_faller = None
+    fall_uah = 0
+
+    for b, v in s["bats"].items():
+        prev = last["bats"].get(b)
+        slot = state["slots"][b]
+        if not prev or prev["charge_now_uah"] is None or v["charge_now_uah"] is None:
+            continue
+
+        delta = v["charge_now_uah"] - prev["charge_now_uah"]
+        if delta < 0:
+            slot["discharge_uah"] += -delta
+            if -delta > fall_uah:
+                fall_uah, first_faller = -delta, b
+        elif delta > 0:
+            slot["charge_uah"] += delta
+
+        # Calendar stress accrues whenever we are observing, charging or not.
+        soc = v["capacity"]
+        temp_dc = v["temp_dc"]
+        if soc is not None and temp_dc is not None and not gap:
+            hours = dt / 3600.0
+            slot["calendar_score"] += hours * calendar_stress(soc, temp_dc / 10.0)
+            slot["soc_hours"] += hours
+            slot["soc_hours_sum"] += hours * soc
+            slot["seconds_observed"] += dt
+            if soc >= 90:
+                slot["seconds_ge_90"] += dt
+
+    # Which pack does the EC reach for first? Credited once per unplug, to the
+    # first pack that falls while the others still hold. Counting every
+    # draining interval instead would just re-measure EFC.
+    if last["ac_online"] == 1 and s["ac_online"] == 0:
+        state["session_open"] = True
+        state["session_credited"] = False
+        state["sessions"] = state.get("sessions", 0) + 1
+    elif s["ac_online"] == 1:
+        state["session_open"] = False
+
+    if state.get("session_open") and not state.get("session_credited") and first_faller:
+        others_flat = all(
+            (s["bats"][o]["charge_now_uah"] - last["bats"][o]["charge_now_uah"]) >= 0
+            for o in s["bats"]
+            if o != first_faller and o in last["bats"]
+            and s["bats"][o]["charge_now_uah"] is not None
+            and last["bats"][o]["charge_now_uah"] is not None
+        )
+        if others_flat:
+            state.setdefault("discharge_first", {b: 0 for b in BATS})
+            state["discharge_first"][first_faller] = \
+                state["discharge_first"].get(first_faller, 0) + 1
+            state["session_credited"] = True
+
+    state["last"] = s
+    return {"counted": True, "dt": dt, "gap": gap}
+
+
+# --------------------------------------------------------------------------
+# charge ceiling control
+# --------------------------------------------------------------------------
+
+def clamp_band(start, stop):
+    stop = max(STOP_MIN, min(STOP_MAX, int(stop)))
+    start = max(START_MIN, min(START_MAX, int(start)))
+    if start >= stop:
+        start = max(START_MIN, stop - 5)
+    return start, stop
+
+
+def write_sysman(attr, value, password=None):
+    """Write one dell-wmi-sysman attribute. Returns None on success, else why."""
+    target = SYSMAN / "attributes" / attr / "current_value"
+    if not target.exists():
+        return f"{attr}: no such attribute"
+    if password:
+        pw = SYSMAN / "authentication" / "Admin" / "current_password"
+        try:
+            pw.write_text(password)
+        except OSError as e:
+            return f"admin password rejected: {e}"
+    try:
+        target.write_text(str(value))
+    except OSError as e:
+        return f"{attr}: {e}"
+    return None
+
+
+def write_powersupply_band(bat, start, stop):
+    """Fallback path for BAT0, which dell_laptop exposes directly.
+
+    BAT1 has no charge_control_* files at all, so this only ever helps BAT0.
+    """
+    d = PS / bat
+    e_path, s_path = d / "charge_control_end_threshold", d / "charge_control_start_threshold"
+    if not e_path.exists():
+        return f"{bat}: no charge_control_end_threshold"
+    # The kernel validates start < end, so which write order succeeds depends
+    # on the values already in place. Try both orders.
+    orders = (((e_path, stop), (s_path, start)),
+              ((s_path, start), (e_path, stop)))
+    err = None
+    for order in orders:
+        try:
+            for path, value in order:
+                path.write_text(str(value))
+            return None
+        except OSError as e:
+            err = e
+    return f"{bat}: {err}"
+
+
+def apply_band(bat, start, stop, password=None, dry_run=True):
+    start, stop = clamp_band(start, stop)
+    mode_attr, start_attr, stop_attr = SYSMAN_ATTRS[bat]
+    if dry_run:
+        return f"[dry-run] {bat} -> Custom {start}/{stop}", None
+
+    # Mode must be Custom before the start/stop values are writable
+    # (CustomChargeStart carries [ReadOnlyIfNot:PrimaryBattChargeCfg=Custom]).
+    err = write_sysman(mode_attr, "Custom", password)
+    if err is None:
+        err = write_sysman(start_attr, start, password) or write_sysman(stop_attr, stop, password)
+
+    if err is not None and bat == "BAT0":
+        fallback = write_powersupply_band(bat, start, stop)
+        if fallback is None:
+            return f"{bat} -> Custom {start}/{stop} (via power_supply)", None
+        err = f"{err}; fallback: {fallback}"
+
+    if err is not None:
+        return None, err
+    return f"{bat} -> Custom {start}/{stop}", None
+
+
+def read_applied(bat):
+    """Best-effort read-back of what the firmware actually holds."""
+    mode_attr, start_attr, stop_attr = SYSMAN_ATTRS[bat]
+    out = {}
+    for label, attr in (("mode", mode_attr), ("start", start_attr), ("stop", stop_attr)):
+        out[label] = read_str(SYSMAN / "attributes" / attr / "current_value")
+    if out["mode"] is None:
+        out["charge_types"] = read_str(PS / bat / "charge_types")
+        out["start"] = read_str(PS / bat / "charge_control_start_threshold")
+        out["stop"] = read_str(PS / bat / "charge_control_end_threshold")
+    return out
+
+
+# --------------------------------------------------------------------------
+# policy
+# --------------------------------------------------------------------------
+
+def decide_roles(state, deadback):
+    """Assign 'protect' to the pack that is ahead on wear, 'work' to the other.
+
+    Lowering the ceiling on a pack shifts load away from it under either EC
+    behaviour: if the EC drains the fuller pack first, a lower ceiling makes it
+    lose that race; if the EC drains in fixed order, a lower ceiling means it
+    delivers fewer Wh before handing over. Both move cycles to the other pack.
+    """
+    slots = state.get("slots", {})
+    present = [b for b in BATS if b in slots]
+    if len(present) < 2:
+        return None, "only one pack tracked so far"
+
+    scores = {b: efc(slots[b]) for b in present}
+    a, c = present[0], present[1]
+    diff = scores[a] - scores[c]
+
+    if abs(diff) < deadback:
+        return {b: "neutral" for b in present}, (
+            f"packs within {deadback:.2f} EFC "
+            f"({scores[a]:.2f} vs {scores[c]:.2f}) - holding neutral band")
+
+    leader = a if diff > 0 else c
+    laggard = c if diff > 0 else a
+    return ({leader: "protect", laggard: "work"},
+            f"{leader} is ahead by {abs(diff):.2f} EFC - protecting it, "
+            f"{laggard} takes the load")
+
+
+# --------------------------------------------------------------------------
+# output
+# --------------------------------------------------------------------------
+
+def wh(uah, uv):
+    if not uah or not uv:
+        return 0.0
+    return (uah / 1e6) * (uv / 1e6)
+
+
+def fmt_status(state, s):
+    slots = state.get("slots", {})
+    lines = []
+    lines.append(f"dell-battery-balance   {now_iso()}")
+    lines.append(f"state: {STATE_FILE}")
+    ac = "AC connected" if s["ac_online"] else "on battery"
+    lines.append(f"power: {ac}")
+    lines.append("")
+
+    hdr = f"{'':6} {'now':>16} {'EFC':>7} {'discharged':>12} {'cal.score':>10} {'mean SoC':>9} {'>=90%':>8}"
+    lines.append(hdr)
+    lines.append("-" * len(hdr))
+
+    for b in BATS:
+        v = s["bats"].get(b)
+        slot = slots.get(b)
+        if not v:
+            lines.append(f"{b:6} {'absent':>16}")
+            continue
+        nominal = v["voltage_min_design_uv"]
+        now = f"{v['capacity']}% {v['status']}"
+        if not slot:
+            lines.append(f"{b:6} {now:>16} {'(no history)':>7}")
+            continue
+        mean_soc = (slot["soc_hours_sum"] / slot["soc_hours"]) if slot["soc_hours"] else 0.0
+        pct90 = (100.0 * slot["seconds_ge_90"] / slot["seconds_observed"]) \
+            if slot["seconds_observed"] else 0.0
+        lines.append(
+            f"{b:6} {now:>16} {efc(slot):>7.2f} "
+            f"{wh(slot['discharge_uah'], nominal):>10.1f}Wh "
+            f"{slot['calendar_score']:>10.1f} {mean_soc:>8.1f}% {pct90:>7.1f}%")
+
+    lines.append("")
+    both = [b for b in BATS if b in slots]
+    if len(both) == 2:
+        d = abs(efc(slots[both[0]]) - efc(slots[both[1]]))
+        lines.append(f"cycle divergence: {d:.2f} EFC")
+        cd = abs(slots[both[0]]["calendar_score"] - slots[both[1]]["calendar_score"])
+        lines.append(f"calendar divergence: {cd:.1f}")
+
+    first = state.get("discharge_first", {})
+    if any(first.values()):
+        tot = sum(first.values()) or 1
+        order = ", ".join(f"{b} {100*n/tot:.0f}%" for b, n in first.items() if n)
+        lines.append(f"EC reaches for first: {order}  ({tot} unplug events)")
+    else:
+        lines.append("EC drain order: not yet observed "
+                     f"(needs unplug events; {state.get('sessions', 0)} seen)")
+
+    pol = state.get("policy")
+    if pol:
+        lines.append(f"policy applied {pol['ts']}: " +
+                     ", ".join(f"{b}={r}" for b, r in pol["roles"].items()))
+    else:
+        lines.append("policy: never applied")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# commands
+# --------------------------------------------------------------------------
+
+def cmd_sample(args):
+    s = sample_all()
+    if not s["bats"]:
+        sys.exit("error: no batteries present")
+    state = load_state()
+    info = integrate(state, s)
+    save_state(state)
+    if not args.no_log:
+        append_log(s)
+    if args.verbose:
+        print(json.dumps({"sample": s, "integrated": info}, indent=2))
+
+
+def cmd_status(args):
+    print(fmt_status(load_state(), sample_all()))
+
+
+def cmd_report(args):
+    state = load_state()
+    s = sample_all()
+    print(fmt_status(state, s))
+    print()
+    print("firmware charge configuration:")
+    for b in BATS:
+        applied = read_applied(b)
+        if applied.get("mode") is None and applied.get("charge_types") is None:
+            print(f"  {b}: unreadable (needs root)")
+            continue
+        print(f"  {b}: " + "  ".join(f"{k}={v}" for k, v in applied.items() if v))
+    print()
+    roles, why = decide_roles(state, args.deadband)
+    print(f"recommendation: {why}")
+    if roles:
+        for b, r in roles.items():
+            st, sp = DEFAULT_BANDS[r]
+            print(f"  {b}: {r}  -> charge {st}/{sp}")
+
+
+def cmd_balance(args):
+    state = load_state()
+    roles, why = decide_roles(state, args.deadband)
+    print(why)
+    if not roles:
+        return
+    if args.apply:
+        require_root("applying charge ceilings")
+    failures = []
+    for b, r in roles.items():
+        st, sp = DEFAULT_BANDS[r]
+        msg, err = apply_band(b, st, sp, args.bios_password, dry_run=not args.apply)
+        print(f"  {err if err else msg}")
+        if err:
+            failures.append(err)
+    if args.apply and not failures:
+        state["policy"] = {"ts": now_iso(), "roles": roles, "mode": "balance"}
+        save_state(state)
+    elif failures:
+        sys.exit("error: some ceilings were not applied (see above)")
+
+
+def cmd_field(args):
+    require_root("lifting charge ceilings")
+    st, sp = DEFAULT_BANDS["field"]
+    state = load_state()
+    failures = []
+    for b in BATS:
+        if b not in state.get("slots", {}) and not (PS / b).exists():
+            continue
+        msg, err = apply_band(b, st, sp, args.bios_password, dry_run=False)
+        print(f"  {err if err else msg}")
+        if err:
+            failures.append(err)
+    if failures:
+        sys.exit("error: field mode not fully applied")
+    state["policy"] = {"ts": now_iso(), "roles": {b: "field" for b in BATS}, "mode": "field"}
+    save_state(state)
+    print("field mode set. Run 'restore' when back at the desk.")
+
+
+def cmd_restore(args):
+    args.apply = True
+    cmd_balance(args)
+
+
+def cmd_reset(args):
+    state = load_state()
+    if args.slot:
+        state.get("slots", {}).pop(args.slot, None)
+        state["last"] = None
+        print(f"reset counters for {args.slot}")
+    else:
+        state = {
+            "version": 1, "created": now_iso(), "slots": {}, "last": None,
+            "discharge_first": {b: 0 for b in BATS}, "sessions": 0, "policy": None,
+        }
+        print("reset all counters")
+    save_state(state)
+
+
+def main():
+    p = argparse.ArgumentParser(
+        prog="dell-battery-balance",
+        description="Track and equalize wear across a Dell Rugged's two packs.")
+    p.add_argument("--deadband", type=float, default=DEFAULT_DEADBAND,
+                   help="EFC divergence required before roles flip "
+                        f"(default {DEFAULT_DEADBAND})")
+    p.add_argument("--bios-password", default=os.environ.get("DBB_BIOS_PASSWORD"),
+                   help="BIOS admin password, if one is set "
+                        "(or set DBB_BIOS_PASSWORD)")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sp = sub.add_parser("sample", help="take one measurement")
+    sp.add_argument("-v", "--verbose", action="store_true")
+    sp.add_argument("--no-log", action="store_true", help="update state but skip the CSV")
+    sp.set_defaults(func=cmd_sample)
+
+    sub.add_parser("status", help="wear summary").set_defaults(func=cmd_status)
+    sub.add_parser("report", help="detailed analysis").set_defaults(func=cmd_report)
+
+    sp = sub.add_parser("balance", help="apply the charge-ceiling policy")
+    sp.add_argument("--apply", action="store_true",
+                    help="actually write to firmware (default is a dry run)")
+    sp.set_defaults(func=cmd_balance)
+
+    sub.add_parser("field", help="lift both ceilings for maximum runtime") \
+        .set_defaults(func=cmd_field)
+    sub.add_parser("restore", help="return to the balancing policy") \
+        .set_defaults(func=cmd_restore)
+
+    sp = sub.add_parser("reset", help="clear accumulated counters")
+    sp.add_argument("--slot", choices=BATS, help="reset one pack only")
+    sp.set_defaults(func=cmd_reset)
+
+    args = p.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
