@@ -214,7 +214,9 @@ version 2. Version-2 state is never downgraded.
    set `general.firmware_write_needs_reboot = true` and record an event.
 
 `tick` = sample + accrual + detection + `resolve` + apply (apply only when
-`auto_balance` is true or a revert fired). The systemd timer runs `tick`
+`auto_balance` is true or a revert fired). `profile set`, `field`, `restore`
+and `balance --apply` always apply immediately, independent of `auto_balance`;
+that flag only governs whether the timer re-applies on its own. The systemd timer runs `tick`
 every 2 min. The separate daily balancing timer is removed.
 
 ## 4. CLI

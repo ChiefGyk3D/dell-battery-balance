@@ -127,6 +127,17 @@ Everything durable lives in `/var/lib/dell-battery-balance`:
 - `samples.csv` — raw sample log, so the wear model can be recomputed or
   re-derived later if the heuristics change
 
+## Roadmap
+
+The next version adds usage profiles (daily / field / travel / storage /
+custom), a system-wide `config.toml`, a pack registry that tracks wear per
+physical pack across swaps and rotations, safe auto-revert out of field mode,
+and a full Plasma config dialog. The design is written up in
+[docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md](docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md),
+including the measured hardware constraint that drives it: these packs expose
+no per-unit identity, so swaps are detected and confirmed rather than
+recognised.
+
 ## Known limits
 
 - **Pack swaps are not reliably detected.** Both packs report an identical
