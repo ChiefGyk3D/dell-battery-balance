@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from dbb import VERSION, apply as apply_mod, config as cfg_mod, policy, registry, render
+from dbb import VERSION, apply as apply_mod, config as cfg_mod, metrics, policy, registry, render
 from dbb.state import add_event, append_log, load_state, now_iso, save_state
 from dbb.sysfs import BATS, sample_all
 from dbb.wear import efc, integrate
@@ -193,6 +193,16 @@ def cmd_tick(args):
     if cfg["general"]["auto_balance"] or res.revert:
         _apply(cfg, state, sample, res)
     save_state(state)
+    _write_metrics(state, sample, cfg)
+
+
+def _write_metrics(state, sample, cfg):
+    """Best effort, after the state is safe on disk: a full state directory
+    or a permissions slip must not turn into a failed tick."""
+    try:
+        metrics.write_metrics(metrics.render_prometheus(render.state_json(state, sample, cfg)))
+    except OSError as e:
+        print(f"warning: metrics not written: {e}", file=sys.stderr)
 
 
 def cmd_sample(args):
@@ -219,6 +229,8 @@ def cmd_status(args):
     state, cfg, s = _view()
     if args.json:
         print(json.dumps(render.state_json(state, s, cfg), indent=2, sort_keys=True))
+    elif args.prometheus:
+        print(metrics.render_prometheus(render.state_json(state, s, cfg)), end="")
     else:
         print(render.fmt_status(state, s, cfg))
 
@@ -517,7 +529,10 @@ def build_parser():
     sp.add_argument("--no-log", action="store_true")
     sp.set_defaults(func=cmd_sample, cls="control")
     sp = sub.add_parser("status", help="wear summary")
-    sp.add_argument("--json", action="store_true")
+    g = sp.add_mutually_exclusive_group()
+    g.add_argument("--json", action="store_true", help="the machine-readable view the applet consumes")
+    g.add_argument("--prometheus", action="store_true",
+                   help="Prometheus text format, the same text every tick writes to metrics.prom")
     sp.set_defaults(func=cmd_status, cls="control")
     sub.add_parser("report", help="detailed analysis").set_defaults(func=cmd_report, cls="control")
     sp = sub.add_parser("balance", help="resolve and optionally apply")

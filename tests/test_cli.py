@@ -491,6 +491,30 @@ class StatusDetail(CliBase):
         self.assertEqual(j["bats"]["BAT0"]["start"], 50)
         self.assertEqual(j["bats"]["BAT0"]["stop"], 90)
 
+    def test_status_prometheus_prints_the_textfile(self):
+        self.run_cli("sample")
+        self.run_cli("pack", "new", "BAT0", "A")
+        code, out, err = self.run_cli("status", "--prometheus")
+        self.assertEqual(code, 0, err)
+        self.assertIn('dbb_pack_efc{pack="A"} ', out)
+        self.assertIn('dbb_slot_present{slot="BAT1"} 1\n', out)
+        self.assertIn('dbb_slot_capacity_percent{slot="BAT1"} 60\n', out)
+        self.assertIn('dbb_info{version="%s"} 1\n' % self.cli.VERSION, out)
+        code, _, err = self.run_cli("status", "--json", "--prometheus")
+        self.assertEqual(code, 2, err)
+
+    def test_tick_writes_the_metrics_textfile(self):
+        code, _, err = self.run_cli("tick")
+        self.assertEqual(code, 0, err)
+        p = os.path.join(os.environ["DBB_STATE_DIR"], "metrics.prom")
+        with open(p) as fh:
+            text = fh.read()
+        self.assertIn("# TYPE dbb_slot_present gauge\n", text)
+        self.assertIn('dbb_slot_present{slot="BAT0"} 1\n', text)
+        self.assertTrue(text.endswith("\n"))
+        self.assertFalse(os.path.exists(p + ".tmp"))
+        self.assertEqual(oct(os.stat(p).st_mode & 0o777), oct(0o664))
+
     def test_reset_all_keeps_event_ids_monotonic(self):
         self.run_cli("profile", "set", "travel")
         before = self.status()["events"][-1]["id"]

@@ -13,7 +13,7 @@ README = os.path.join(os.path.dirname(__file__), os.pardir, "README.md")
 
 # One entry per documented form, placeholders filled with plausible values.
 DOCUMENTED = [
-    ["tick"], ["sample"], ["status"], ["status", "--json"], ["report"],
+    ["tick"], ["sample"], ["status"], ["status", "--json"], ["status", "--prometheus"], ["report"],
     ["balance"], ["balance", "--apply"],
     ["profile", "list"], ["profile", "show", "daily"],
     ["profile", "set", "field"], ["profile", "set", "field", "--for", "8h"],

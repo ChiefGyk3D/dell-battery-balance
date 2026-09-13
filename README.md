@@ -244,7 +244,7 @@ does not recognize even though it is valid, equivalent TOML.
 |---|---|
 | `tick` | sample, evaluate reverts, apply if `auto_balance` is on (or a revert fired) — what the timer runs |
 | `sample` | one measurement, no policy |
-| `status [--json]` | wear summary; `--json` is the machine-readable view the applet consumes |
+| `status [--json \| --prometheus]` | wear summary; `--json` is the machine-readable view the applet consumes, `--prometheus` the text every tick writes to `metrics.prom` |
 | `report` | `status`, plus events, firmware read-back, and the current recommendation |
 | `balance [--apply]` | resolve the active profile's bands; dry run unless `--apply` |
 | `profile list` | show all profiles, marking the active one |
@@ -459,6 +459,8 @@ bit keeps new files in the service group):
 - `samples-YYYY.csv` — raw sample log, one file per calendar year (UTC), so
   the wear model can be recomputed or re-derived later if the heuristics
   change without ever-growing files.
+- `metrics.prom` — the Prometheus text exposition of `status`, rewritten
+  atomically on every tick (see Monitoring below).
 
 Events carry an `id` (monotonic, never reused) since 0.3; a 0.2 state file
 gets its existing events numbered once on first load. `reset --all` keeps
@@ -474,6 +476,40 @@ becomes owned `dell-battery-balance:dell-battery-balance` — the group write
 in `0664` is what let the service account replace it, and the replacement it
 writes is naturally owned by whoever wrote it. Group permissions are
 unaffected; `dbb-configure` keeps working the same way afterward.
+
+### Monitoring
+
+Every tick rewrites `/var/lib/dell-battery-balance/metrics.prom` in the
+Prometheus text format, and `status --prometheus` prints the same text on
+demand. The numbers are rendered from the same view `status --json` and the
+applet use, so a dashboard never disagrees with the popup. Nothing listens
+on a port: point node_exporter's textfile collector at the file, either by
+symlinking it into the collector directory or by naming the state directory
+itself:
+
+```sh
+sudo ln -s /var/lib/dell-battery-balance/metrics.prom /var/lib/node_exporter/textfile_collector/dell_battery_balance.prom
+# or: node_exporter --collector.textfile.directory=/var/lib/dell-battery-balance
+```
+
+The file is world-readable (`0664` in a `2775` directory) so node_exporter
+needs no group membership. Series, all prefixed `dbb_`:
+
+| Family | Labels | What |
+|---|---|---|
+| `dbb_pack_efc`, `dbb_pack_calendar_score` | `pack` | the two wear numbers per named pack, across every tenure (the calendar score includes the bench estimate) — the long-run curves worth charting |
+| `dbb_pack_in_slot` / `dbb_pack_bench_hours`, `dbb_pack_bench_soc_percent`, `dbb_pack_retired`, `dbb_pack_tenures` | `pack` (+ `slot`) | where each pack is |
+| `dbb_divergence_efc`, `dbb_divergence_calendar_score` | | what the balancer compares against `deadband_efc`; absent unless both slots are occupied |
+| `dbb_slot_present`, `dbb_slot_capacity_percent`, `dbb_slot_power_watts`, `dbb_slot_voltage_volts`, `dbb_slot_temperature_celsius`, `dbb_slot_health_percent`, `dbb_slot_status`, `dbb_slot_pack_info` | `slot` (+ `status` / `pack`) | live readings per slot; only `present` is emitted for an empty slot |
+| `dbb_slot_ceiling_start_percent`, `dbb_slot_ceiling_stop_percent`, `dbb_slot_firmware_error`, `dbb_slot_role` | `slot` (+ `role`) | what the firmware reports after the last apply, and the role the policy gave the slot |
+| `dbb_slot_tenure_efc`, `dbb_slot_tenure_calendar_score`, `dbb_slot_mean_soc_percent`, `dbb_slot_time_ge90_percent`, `dbb_slot_in_slot_hours` | `slot` | the current tenure alone |
+| `dbb_profile_info`, `dbb_field_mode`, `dbb_ac_online`, `dbb_pending_questions`, `dbb_config_error`, `dbb_info` | `profile`,`type` / `version` | state of the tool itself |
+| `dbb_unplug_sessions_total`, `dbb_drain_first_total` | (`slot`) | counters behind the "EC reaches for first" line |
+
+Values that are unknown (an absent pack's temperature, a failed read-back's
+ceiling) are left out of the file rather than written as a placeholder, so
+a missing series means "not known", never zero. A failure to write the file
+is a warning on the tick's stderr, never a failed tick.
 
 ## Roadmap
 
