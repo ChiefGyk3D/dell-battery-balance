@@ -7,3 +7,6 @@ samples.csv
 
 # Subagent-driven-development scratch (ledger, briefs, review packages)
 .superpowers/
+
+# Claude Code worktrees
+.claude/worktrees/
