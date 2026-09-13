@@ -1,0 +1,40 @@
+[general]
+active_profile = "daily"
+previous_profile = "daily"
+deadband_efc = 0.5
+auto_balance = true
+sample_interval_s = 120
+bench_temp_c = 25.0
+bios_password_file = ""
+firmware_write_needs_reboot = false
+
+[profiles.daily]
+label = "Daily"
+description = "Docked / desk. Wear balancing on."
+balancing = true
+bands.neutral = [50, 80]
+bands.protect = [50, 60]
+bands.work = [80, 90]
+
+[profiles.field]
+label = "Field / Conference"
+description = "Maximum runtime. Wear protection off."
+balancing = false
+bands.all = [90, 100]
+revert.after_hours = 72
+revert.on_ac_hours = 12
+revert.to = "previous"
+
+[profiles.storage]
+label = "Storage"
+description = "Long idle. Least wear."
+balancing = false
+bands.all = [50, 55]
+
+[profiles.travel]
+label = "Travel"
+description = "Reserve without the 100% float."
+balancing = true
+bands.neutral = [70, 90]
+bands.protect = [60, 80]
+bands.work = [80, 95]

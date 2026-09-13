@@ -1,0 +1,260 @@
+"""System-wide configuration: /etc/dell-battery-balance/config.toml."""
+import copy
+import json
+import os
+import re
+import tomllib
+from pathlib import Path
+
+from dbb.sysfs import START_MIN, START_MAX, STOP_MIN, STOP_MAX
+
+CONFIG_DIR = Path(os.environ.get("DBB_CONFIG_DIR", "/etc/dell-battery-balance"))
+CONFIG_FILE = CONFIG_DIR / "config.toml"
+
+SLOTS = ("BAT0", "BAT1")
+ROLES = ("neutral", "protect", "work")
+PROFILE_NAME_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
+
+GENERAL_KEYS = {
+    "active_profile": str, "previous_profile": str, "deadband_efc": float,
+    "auto_balance": bool, "sample_interval_s": int, "bench_temp_c": float,
+    "bios_password_file": str, "firmware_write_needs_reboot": bool,
+}
+PROFILE_KEYS = {"label", "description", "balancing", "bands", "revert", "pins"}
+REVERT_KEYS = {"after_hours", "on_ac_hours", "to"}
+
+
+class ConfigError(ValueError):
+    pass
+
+
+def default_config():
+    return copy.deepcopy({
+        "general": {
+            "active_profile": "daily", "previous_profile": "daily",
+            "deadband_efc": 0.5, "auto_balance": True, "sample_interval_s": 120,
+            "bench_temp_c": 25.0, "bios_password_file": "",
+            "firmware_write_needs_reboot": False,
+        },
+        "profiles": {
+            "daily": {"label": "Daily", "description": "Docked / desk. Wear balancing on.",
+                      "balancing": True,
+                      "bands": {"neutral": [50, 80], "protect": [50, 60], "work": [80, 90]}},
+            "field": {"label": "Field / Conference",
+                      "description": "Maximum runtime. Wear protection off.",
+                      "balancing": False, "bands": {"all": [90, 100]},
+                      "revert": {"after_hours": 72, "on_ac_hours": 12, "to": "previous"}},
+            "travel": {"label": "Travel", "description": "Reserve without the 100% float.",
+                       "balancing": True,
+                       "bands": {"neutral": [70, 90], "protect": [60, 80], "work": [80, 95]}},
+            "storage": {"label": "Storage", "description": "Long idle. Least wear.",
+                        "balancing": False, "bands": {"all": [50, 55]}},
+        },
+    })
+
+
+def profile_type(profile):
+    return "fixed" if "all" in profile.get("bands", {}) else "balancing"
+
+
+# ---------------------------------------------------------------- validation
+
+def _band(path, v):
+    if (not isinstance(v, list) or len(v) != 2
+            or not all(isinstance(x, int) and not isinstance(x, bool) for x in v)):
+        raise ConfigError(f"{path}: must be [start, stop] integers")
+    start, stop = v
+    if not START_MIN <= start <= START_MAX:
+        raise ConfigError(f"{path}: start {start} outside {START_MIN}-{START_MAX}")
+    if not STOP_MIN <= stop <= STOP_MAX:
+        raise ConfigError(f"{path}: stop {stop} outside {STOP_MIN}-{STOP_MAX}")
+    if start >= stop:
+        raise ConfigError(f"{path}: start must be below stop")
+
+
+def _typed(path, v, t):
+    if t is float:
+        ok = isinstance(v, (int, float)) and not isinstance(v, bool)
+    elif t is int:
+        ok = isinstance(v, int) and not isinstance(v, bool)
+    else:
+        ok = isinstance(v, t)
+    if not ok:
+        raise ConfigError(f"{path}: expected {t.__name__}")
+
+
+def validate(cfg):
+    if set(cfg) - {"general", "profiles"}:
+        raise ConfigError(f"unknown top-level keys: {sorted(set(cfg) - {'general', 'profiles'})}")
+    g = cfg.get("general", {})
+    for k in g:
+        if k not in GENERAL_KEYS:
+            raise ConfigError(f"general.{k}: unknown key")
+    for k, t in GENERAL_KEYS.items():
+        if k not in g:
+            raise ConfigError(f"general.{k}: missing")
+        _typed(f"general.{k}", g[k], t)
+    if g["deadband_efc"] < 0:
+        raise ConfigError("general.deadband_efc: must be >= 0")
+
+    profiles = cfg.get("profiles", {})
+    if "daily" not in profiles:
+        raise ConfigError("profiles.daily: required")
+    for name, p in profiles.items():
+        base = f"profiles.{name}"
+        if not PROFILE_NAME_RE.match(name):
+            raise ConfigError(f"{base}: bad profile name {name!r}")
+        for k in p:
+            if k not in PROFILE_KEYS:
+                raise ConfigError(f"{base}.{k}: unknown key")
+        for k in ("label", "balancing", "bands"):
+            if k not in p:
+                raise ConfigError(f"{base}.{k}: missing")
+        _typed(f"{base}.label", p["label"], str)
+        _typed(f"{base}.description", p.get("description", ""), str)
+        _typed(f"{base}.balancing", p["balancing"], bool)
+        bands = p["bands"]
+        if "all" in bands:
+            if set(bands) != {"all"}:
+                raise ConfigError(f"{base}.bands: 'all' cannot be mixed with role bands")
+            if p["balancing"]:
+                raise ConfigError(f"{base}.balancing: must be false for a fixed profile")
+            _band(f"{base}.bands.all", bands["all"])
+        else:
+            for r in ROLES:
+                if r not in bands:
+                    raise ConfigError(f"{base}.bands.{r}: missing")
+                _band(f"{base}.bands.{r}", bands[r])
+            if set(bands) - set(ROLES):
+                raise ConfigError(f"{base}.bands: unknown roles {sorted(set(bands) - set(ROLES))}")
+            if not p["balancing"]:
+                raise ConfigError(f"{base}.balancing: must be true for a balancing profile")
+        rv = p.get("revert")
+        if rv is not None:
+            for k in rv:
+                if k not in REVERT_KEYS:
+                    raise ConfigError(f"{base}.revert.{k}: unknown key")
+            if "after_hours" not in rv and "on_ac_hours" not in rv:
+                raise ConfigError(f"{base}.revert: needs after_hours and/or on_ac_hours")
+            for k in ("after_hours", "on_ac_hours"):
+                if k in rv:
+                    _typed(f"{base}.revert.{k}", rv[k], float)
+                    if rv[k] <= 0:
+                        raise ConfigError(f"{base}.revert.{k}: must be > 0")
+            to = rv.get("to", "previous")
+            if to != "previous" and to not in profiles:
+                raise ConfigError(f"{base}.revert.to: unknown profile {to!r}")
+        for slot, pin in p.get("pins", {}).items():
+            pb = f"{base}.pins.{slot}"
+            if slot not in SLOTS:
+                raise ConfigError(f"{pb}: unknown slot")
+            if not isinstance(pin, dict):
+                raise ConfigError(f"{pb}: must be a table")
+            has_role, has_band = "role" in pin, ("start" in pin or "stop" in pin)
+            if has_role == has_band:
+                raise ConfigError(f"{pb}: exactly one of role or start/stop")
+            if has_role:
+                if set(pin) != {"role"} or pin["role"] not in ROLES:
+                    raise ConfigError(f"{pb}.role: must be one of {ROLES}")
+            else:
+                if set(pin) != {"start", "stop"}:
+                    raise ConfigError(f"{pb}: needs both start and stop")
+                _band(pb, [pin["start"], pin["stop"]])
+    for k in ("active_profile", "previous_profile"):
+        if g[k] not in profiles:
+            raise ConfigError(f"general.{k}: unknown profile {g[k]!r}")
+
+
+# --------------------------------------------------------------- load / emit
+
+def load(path=CONFIG_FILE):
+    path = Path(path)
+    if not path.exists():
+        return default_config()
+    try:
+        with path.open("rb") as fh:
+            cfg = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise ConfigError(f"{path}: {e}") from e
+    validate(cfg)
+    return cfg
+
+
+def _val(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        s = repr(v)
+        return s if ("." in s or "e" in s) else s + ".0"
+    if isinstance(v, str):
+        return json.dumps(v)
+    if isinstance(v, list):
+        return "[" + ", ".join(_val(x) for x in v) + "]"
+    if isinstance(v, dict):
+        return "{ " + ", ".join(f"{k} = {_val(x)}" for k, x in v.items()) + " }"
+    raise ConfigError(f"cannot emit {type(v).__name__}")
+
+
+def emit(cfg):
+    out = ["[general]"]
+    for k in GENERAL_KEYS:
+        if k in cfg["general"]:
+            out.append(f"{k} = {_val(cfg['general'][k])}")
+    for name in sorted(cfg["profiles"]):
+        p = cfg["profiles"][name]
+        out += ["", f"[profiles.{name}]"]
+        for k in ("label", "description", "balancing"):
+            if k in p:
+                out.append(f"{k} = {_val(p[k])}")
+        for k in sorted(p.get("bands", {})):
+            out.append(f"bands.{k} = {_val(p['bands'][k])}")
+        for k in ("after_hours", "on_ac_hours", "to"):
+            if k in p.get("revert", {}):
+                out.append(f"revert.{k} = {_val(p['revert'][k])}")
+        for slot in sorted(p.get("pins", {})):
+            out.append(f"pins.{slot} = {_val(p['pins'][slot])}")
+    return "\n".join(out) + "\n"
+
+
+def save(cfg, path=CONFIG_FILE):
+    validate(cfg)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        bak = path.with_name(path.name + ".bak")
+        bak.write_bytes(path.read_bytes())
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(emit(cfg))
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o664)
+    except OSError:
+        pass
+
+
+def _coerce(raw):
+    s = raw.strip()
+    if s.lower() in ("true", "false"):
+        return s.lower() == "true"
+    if "," in s:
+        return [_coerce(x) for x in s.split(",")]
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    try:
+        return float(s)
+    except ValueError:
+        return s
+
+
+def set_dotted(cfg, key, raw):
+    parts = key.split(".")
+    node = cfg
+    for p in parts[:-1]:
+        node = node.setdefault(p, {})
+        if not isinstance(node, dict):
+            raise ConfigError(f"{key}: {p} is not a table")
+    node[parts[-1]] = _coerce(raw)
