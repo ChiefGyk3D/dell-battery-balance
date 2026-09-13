@@ -490,6 +490,13 @@ clipping, sysfs-hiccup pending).
 - **Only BAT0 exposes `charge_control_*` to Linux sysfs.** BAT1 is reachable
   only via `dell-wmi-sysman`, so generic tools like TLP can never manage it.
   The script uses sysman for both and falls back to `power_supply` for BAT0.
+  Measured 2026-09-13: after a hot-swap of BAT0 the re-created device comes
+  back *without* `charge_types` and the `charge_control_*` files (the
+  dell-laptop battery hook does not re-attach), and they stay gone until a
+  reboot. Only the unprivileged live read-back loses its source; the service
+  account still reads and writes the real ceilings through sysman, so
+  balancing is unaffected and the popup falls back to the last apply's
+  read-back with its age.
 - **Sysman writes may need a reboot** to take effect on some attributes.
   `report` reads back what the firmware actually holds — check it after applying.
 - Setting Battery 1 to `Custom` greys out Dell Optimizer's Dynamic Charge
