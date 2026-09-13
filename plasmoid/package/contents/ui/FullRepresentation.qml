@@ -265,16 +265,21 @@ PlasmaExtras.Representation {
         contentItem: ColumnLayout {
             spacing: Kirigami.Units.smallSpacing
             PlasmaComponents.Label {
-                visible: !!(root.info && root.info.revert)
-                font: Kirigami.Theme.smallFont
-                text: {
-                    if (!root.info || !root.info.revert) return "";
-                    const r = root.info.revert;
-                    const parts = [];
-                    if (r.after_hours_left !== null) parts.push(i18n("%1 h", Math.max(0, r.after_hours_left).toFixed(1)));
-                    if (r.on_ac_hours_left !== null) parts.push(i18n("%1 h on AC", Math.max(0, r.on_ac_hours_left).toFixed(1)));
-                    return i18n("Reverts to %1 in %2", r.to, parts.join(i18n(" or ")));
+                readonly property var parts: {
+                    const r = root.info ? root.info.revert : null;
+                    const out = [];
+                    if (!r) return out;
+                    if (r.after_hours_left !== null && r.after_hours_left !== undefined)
+                        out.push(i18n("%1 h", Math.max(0, r.after_hours_left).toFixed(1)));
+                    if (r.on_ac_hours_left !== null && r.on_ac_hours_left !== undefined)
+                        out.push(i18n("%1 h on AC", Math.max(0, r.on_ac_hours_left).toFixed(1)));
+                    return out;
                 }
+                visible: parts.length > 0
+                font: Kirigami.Theme.smallFont
+                text: parts.length > 0
+                    ? i18n("Reverts to %1 in %2", root.info.revert.to, parts.join(i18n(" or ")))
+                    : ""
             }
             Flow {
                 Layout.fillWidth: true

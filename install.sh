@@ -24,6 +24,7 @@ find /usr/local/lib/$SVC -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null
 # precompile now -- otherwise every tick would try (and fail) to write
 # __pycache__ and recompile from source every 2 minutes.
 python3 -m compileall -q /usr/local/lib/$SVC/dbb
+chmod -R a+rX /usr/local/lib/$SVC
 install -Dm755 "$src/dell-battery-balance" /usr/local/bin/dell-battery-balance
 install -Dm755 "$src/libexec/dell-battery-balance-grant" /usr/local/libexec/dell-battery-balance-grant
 install -Dm755 "$src/libexec/dbb-control"   /usr/local/libexec/dbb-control

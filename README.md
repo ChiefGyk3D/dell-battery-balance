@@ -90,6 +90,27 @@ sudo ./uninstall.sh            # leaves /etc and /var/lib in place
 sudo ./uninstall.sh --purge    # also removes config and state
 ```
 
+## Upgrading from 0.1 (the root-run install)
+
+Re-running `sudo ./install.sh` on a machine that already has the older,
+root-run 0.1 layout is safe and upgrades in place. Exactly what it does to
+an existing install:
+
+- Disables and removes `dell-battery-balance-sample.{service,timer}` and the
+  old single `com.chiefgyk3d.dellbatterybalance.policy` polkit action — the
+  0.1 layout that this scoped-account model replaces.
+- Creates the `dell-battery-balance` service account (skipped if it already
+  exists from a previous run).
+- Re-owns `/var/lib/dell-battery-balance` to `dell-battery-balance:dell-battery-balance`.
+  `state.json` and `samples.csv` are preserved — only ownership and mode
+  change, never the content.
+- Installs `/etc/dell-battery-balance/config.toml` from the shipped default
+  only if no config file is already present; an existing config.toml,
+  including any custom profiles, is left untouched.
+- Upgrades the Plasma applet in place (`kpackagetool6 ... --upgrade`, falling
+  back to `--install` only if it was never installed).
+- Enables `dell-battery-balance.timer` (replacing the old sample timer).
+
 ## Usage
 
 Read-only commands run as any user — state and config are group/world
@@ -121,7 +142,35 @@ everything else above stay control-class. See Privilege model below.
 
 If a BIOS admin password is set, point `general.bios_password_file` at a
 file readable only by the service account; the tool never takes it as an
-argument or environment variable.
+argument or environment variable. The grant script's gate for this is a
+plain-text match against `config.toml`, so `bios_password_file` must be
+written as a bare key under `[general]` (`bios_password_file = "/path"` on
+its own line, which is what `config set`/`config apply` always produce) —
+not the dotted `general.bios_password_file = "/path"` form, which the gate
+does not recognize even though it is valid, equivalent TOML.
+
+### CLI reference
+
+| Command | What it does |
+|---|---|
+| `tick` | sample, evaluate reverts, apply if `auto_balance` is on (or a revert fired) — what the timer runs |
+| `sample` | one measurement, no policy |
+| `status [--json]` | wear summary; `--json` is the machine-readable view the applet consumes |
+| `report` | `status`, plus events, firmware read-back, and the current recommendation |
+| `balance [--apply]` | resolve the active profile's bands; dry run unless `--apply` |
+| `profile list` | show all profiles, marking the active one |
+| `profile show <name>` | print one profile's TOML |
+| `profile set <name> [--for <duration>]` | switch profiles and apply immediately; `--for` (e.g. `8h`, `90m`, `3d`) arms a one-off revert regardless of whether the profile has its own `[revert]` table |
+| `profile create <name> --from <name>` | clone an existing profile |
+| `profile edit <name> key=value ...` | change one profile's fields |
+| `profile delete <name>` | remove a profile (not `daily`, not the active one) |
+| `config get [key]` | print the whole config or one dotted key |
+| `config set key=value ...` | change `general.*` or `profiles.*` fields |
+| `config validate <path>` | check a candidate file without writing anything |
+| `config apply <path>` | replace the whole config from a file (must be a complete, valid config) |
+| `field` | alias: `profile set field` |
+| `restore` | alias: `profile set <previous_profile>` |
+| `reset --slot <SLOT> \| --all` | clear counters for one slot, or everything |
 
 ## Privilege model
 
@@ -141,6 +190,11 @@ so it runs twice over: via `ExecStartPre=+` on every tick (self-healing every
 `dell-wmi-sysman` or `BAT0` device appears, so it's also correct for the
 first applet click after a fresh boot.
 
+Clearing `bios_password_file` does not revoke the group grant on
+`Admin/current_password` until the next reboot (sysfs permissions are reset
+then) or until the grant script is edited and the file is `chmod`ed back
+manually in the meantime.
+
 Two polkit actions gate the two wrappers used above:
 
 | Action | Wrapper | Used for | Default prompt |
@@ -158,7 +212,10 @@ the tool itself rejects a configure-class subcommand under
 refuses outright (exit 3, before even parsing the command) if
 `--polkit-class` appears more than once — the wrappers pin it once and pass
 `--` before the rest of `"$@"`, so argparse's "last occurrence wins" behavior
-can never be used to swap `control` for `configure` after the fact.
+cannot be used to swap `control` for `configure` after the fact: a repeated
+`--polkit-class` is rejected outright, and the top-level parser also sets
+`allow_abbrev=False` so the flag cannot be smuggled in under a
+prefix-abbreviated spelling either.
 
 ### Verify
 
@@ -175,6 +232,12 @@ pkexec --user dell-battery-balance /usr/local/libexec/dbb-control --polkit-class
     # must fail (exit 2 or 3) and leave the value unchanged -- the second
     # --polkit-class cannot override the class the wrapper already set
 sudo journalctl -u dell-battery-balance.service -n 5
+ls -l /etc/systemd/system | grep dell-battery
+    # after an upgrade from 0.1: only dell-battery-balance.{service,timer} --
+    # no leftover dell-battery-balance-sample.{service,timer}
+dell-battery-balance status
+    # after an upgrade: EFC/calendar-score numbers match what they were
+    # pre-upgrade -- state.json was preserved, not reset
 ```
 
 ## Plasma applet
@@ -223,7 +286,11 @@ applet can read them without privilege):
 Configuration lives in `/etc/dell-battery-balance/config.toml`, owned
 `root:dell-battery-balance` (directory `2775`, file `0664`) so `config
 set`/`config apply`, run as the service account through `dbb-configure`, can
-write it.
+write it. After the first `config set` (or `config apply`), the file itself
+becomes owned `dell-battery-balance:dell-battery-balance` — the group write
+in `0664` is what let the service account replace it, and the replacement it
+writes is naturally owned by whoever wrote it. Group permissions are
+unaffected; `dbb-configure` keeps working the same way afterward.
 
 ## Roadmap
 
@@ -256,11 +323,19 @@ and, on the applet side, a full Plasma config dialog and notifications.
 ## Tests
 
 ```sh
-python3 tests/test_wear_model.py
+python3 -m unittest discover -s tests -v
 ```
 
-Simulates three full sequential-discharge cycles and asserts that the pack
-doing the draining accumulates more EFC, that the idle pack accumulates more
-calendar score, that the drain-order detector credits one event per unplug,
-that the deadband holds near-equal packs neutral, and that bands clamp to the
-firmware's limits.
+94 tests across five files (`test_wear_model.py`, `test_policy.py`,
+`test_config.py`, `test_apply.py`, `test_cli.py`), all against a fake `/sys`
+tree and temp state/config dirs (`DBB_SYSFS_ROOT`, `DBB_STATE_DIR`,
+`DBB_CONFIG_DIR`) — never real hardware or files. Coverage includes: three
+full sequential-discharge cycles, asserting the pack doing the draining
+accumulates more EFC, the idle pack accumulates more calendar score, the
+drain-order detector credits one event per unplug, the deadband holds
+near-equal packs neutral, and bands clamp to the firmware's limits; the
+policy engine's role/band/pin/revert resolution; config schema validation
+and `set_dotted` coercion; firmware apply/read-back and mismatch recording;
+and the full CLI surface, including profile switching, `--for` one-off
+reverts, config get/set/validate/apply strictness, and the polkit-class
+gate.
