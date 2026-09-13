@@ -43,6 +43,19 @@ class Validation(unittest.TestCase):
         self.cfg["general"]["typo"] = 1
         self.assertRejects("general.typo")
 
+    def test_sample_log_years_is_optional_with_a_default_but_must_be_positive(self):
+        self.assertEqual(self.cfg["general"]["sample_log_years"], 3)
+        del self.cfg["general"]["sample_log_years"]
+        config.validate(self.cfg)   # a 0.3.0 config.toml without the key still loads
+        self.cfg["general"]["sample_log_years"] = 0
+        self.assertRejects("general.sample_log_years")
+        self.cfg["general"]["sample_log_years"] = 2.5
+        self.assertRejects("general.sample_log_years")
+
+    def test_required_general_key_still_missing(self):
+        del self.cfg["general"]["deadband_efc"]
+        self.assertRejects("general.deadband_efc: missing")
+
     def test_unknown_profile_key(self):
         self.cfg["profiles"]["daily"]["colour"] = "red"
         self.assertRejects("profiles.daily.colour")
@@ -114,6 +127,17 @@ class LoadSave(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cfg = config.load(os.path.join(d, "config.toml"))
         self.assertEqual(cfg, config.default_config())
+
+    def test_load_fills_the_optional_key_so_emit_round_trips_it(self):
+        text = config.emit(config.default_config())
+        text = "\n".join(l for l in text.splitlines() if not l.startswith("sample_log_years")) + "\n"
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "config.toml")
+            with open(p, "w") as fh:
+                fh.write(text)
+            cfg = config.load(p)
+        self.assertEqual(cfg["general"]["sample_log_years"], 3)
+        self.assertIn("sample_log_years = 3\n", config.emit(cfg))
 
     def test_save_writes_bak_and_validates(self):
         with tempfile.TemporaryDirectory() as d:

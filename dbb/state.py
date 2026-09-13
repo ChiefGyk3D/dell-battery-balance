@@ -14,6 +14,7 @@
 import csv
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -115,6 +116,31 @@ def _make_readable(path, mode):
 def sample_log_path(ts):
     year = datetime.fromtimestamp(ts, timezone.utc).year
     return STATE_DIR / f"samples-{year}.csv"
+
+
+SAMPLE_LOG_RE = re.compile(r"^samples-(\d{4})\.csv$")
+
+
+def prune_sample_logs(now_ts, keep_years):
+    """Delete per-year sample logs older than the newest `keep_years`
+    calendar years (UTC), counting the current year as one. Only files
+    named exactly samples-YYYY.csv are candidates; the orphaned 0.1
+    samples.csv and anything else in the directory are never touched."""
+    cutoff = datetime.fromtimestamp(now_ts, timezone.utc).year - int(keep_years) + 1
+    try:
+        names = sorted(os.listdir(STATE_DIR))
+    except OSError:
+        return []
+    removed = []
+    for name in names:
+        m = SAMPLE_LOG_RE.match(name)
+        if m and int(m.group(1)) < cutoff:
+            try:
+                os.remove(STATE_DIR / name)
+                removed.append(name)
+            except OSError:
+                pass
+    return removed
 
 
 def append_log(s):

@@ -50,6 +50,7 @@ sample_interval_s   = 120          # informational; the systemd timer sets the r
 bench_temp_c        = 25.0         # assumed temperature for packs on the shelf
 bios_password_file  = ""           # root-only file; empty = no BIOS admin password
 firmware_write_needs_reboot = false  # set true by the tool if read-back ever disagrees
+sample_log_years    = 3            # 0.3.1: per-year sample logs older than this many years are deleted on tick; optional, defaults to 3
 
 [profiles.daily]
 label       = "Daily"

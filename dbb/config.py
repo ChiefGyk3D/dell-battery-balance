@@ -30,7 +30,11 @@ GENERAL_KEYS = {
     "active_profile": str, "previous_profile": str, "deadband_efc": float,
     "auto_balance": bool, "sample_interval_s": int, "bench_temp_c": float,
     "bios_password_file": str, "firmware_write_needs_reboot": bool,
+    "sample_log_years": int,
 }
+# Keys added after 0.3.0: a config.toml written before they existed must
+# still load, so they are optional on read and filled in by load()/load_json().
+GENERAL_OPTIONAL = {"sample_log_years": 3}
 PROFILE_KEYS = {"label", "description", "balancing", "bands", "revert", "pins"}
 REVERT_KEYS = {"after_hours", "on_ac_hours", "to"}
 
@@ -45,7 +49,7 @@ def default_config():
             "active_profile": "daily", "previous_profile": "daily",
             "deadband_efc": 0.5, "auto_balance": True, "sample_interval_s": 120,
             "bench_temp_c": 25.0, "bios_password_file": "",
-            "firmware_write_needs_reboot": False,
+            "firmware_write_needs_reboot": False, "sample_log_years": 3,
         },
         "profiles": {
             "daily": {"label": "Daily", "description": "Docked / desk. Wear balancing on.",
@@ -105,10 +109,14 @@ def validate(cfg):
             raise ConfigError(f"general.{k}: unknown key")
     for k, t in GENERAL_KEYS.items():
         if k not in g:
+            if k in GENERAL_OPTIONAL:
+                continue
             raise ConfigError(f"general.{k}: missing")
         _typed(f"general.{k}", g[k], t)
     if g["deadband_efc"] < 0:
         raise ConfigError("general.deadband_efc: must be >= 0")
+    if g.get("sample_log_years", 1) < 1:
+        raise ConfigError("general.sample_log_years: must be >= 1 (whole years of sample logs to keep)")
 
     profiles = cfg.get("profiles", {})
     if "daily" not in profiles:
@@ -202,6 +210,12 @@ def load(path=CONFIG_FILE, must_exist=False):
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{path}: {e}") from e
     validate(cfg)
+    return _fill_optional(cfg)
+
+
+def _fill_optional(cfg):
+    for k, v in GENERAL_OPTIONAL.items():
+        cfg["general"].setdefault(k, v)
     return cfg
 
 
@@ -222,7 +236,7 @@ def load_json(path):
     if not isinstance(cfg, dict):
         raise ConfigError(f"{path}: top level must be an object")
     validate(cfg)
-    return cfg
+    return _fill_optional(cfg)
 
 
 def _val(v):

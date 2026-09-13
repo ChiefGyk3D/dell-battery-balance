@@ -458,7 +458,12 @@ bit keeps new files in the service group):
   and display the migrated data without rewriting the file until then.
 - `samples-YYYY.csv` — raw sample log, one file per calendar year (UTC), so
   the wear model can be recomputed or re-derived later if the heuristics
-  change without ever-growing files.
+  change without ever-growing files. Roughly 36 MB per year at the 2-minute
+  cadence; `general.sample_log_years` (default 3, counting the current
+  year) is how many years' files are kept — older ones are deleted by
+  `tick`, each deletion logged as a `log` event. The key is optional, so a
+  config written by 0.3.0 keeps loading; `config set
+  general.sample_log_years=10` to keep more.
 - `metrics.prom` — the Prometheus text exposition of `status`, rewritten
   atomically on every tick (see Monitoring below).
 

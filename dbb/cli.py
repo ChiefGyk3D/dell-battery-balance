@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dbb import VERSION, apply as apply_mod, config as cfg_mod, metrics, policy, registry, render
-from dbb.state import add_event, append_log, load_state, now_iso, save_state
+from dbb.state import add_event, append_log, load_state, now_iso, prune_sample_logs, save_state
 from dbb.sysfs import BATS, sample_all
 from dbb.wear import efc, integrate
 
@@ -185,6 +185,9 @@ def cmd_tick(args):
     integrate(state, sample)
     append_log(sample)
     cfg = load_config_or_snapshot(state)
+    keep = cfg["general"].get("sample_log_years", cfg_mod.GENERAL_OPTIONAL["sample_log_years"])
+    for name in prune_sample_logs(sample["ts"], keep):
+        add_event(state, "log", f"removed {name} (keeping {keep} years of samples)")
     now = time.time()
     res = policy.resolve(cfg, state, sample, now)
     if res.revert:

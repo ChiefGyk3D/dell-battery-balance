@@ -779,6 +779,22 @@ class Packs(CliBase):
         j = self.status()
         self.assertNotIn("B", [p["name"] for p in j["packs"]])
 
+    def test_tick_prunes_old_sample_logs_per_config(self):
+        self.run_cli("config", "set", "general.sample_log_years=1")
+        old = os.path.join(os.environ["DBB_STATE_DIR"], "samples-2001.csv")
+        with open(old, "w") as fh:
+            fh.write("ts\n")
+        code, _, err = self.run_cli("tick")
+        self.assertEqual(code, 0, err)
+        self.assertFalse(os.path.exists(old))
+        j = self.status()
+        self.assertTrue(any("samples-2001.csv" in e["detail"] for e in j["events"]), j["events"])
+        # the current year's log survives and keeps being appended to
+        code, _, err = self.run_cli("tick")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(any(n.startswith("samples-2") and n.endswith(".csv")
+                            for n in os.listdir(os.environ["DBB_STATE_DIR"])))
+
     def test_sample_log_is_per_year(self):
         self.run_cli("sample")
         import datetime, glob

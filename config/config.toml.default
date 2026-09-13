@@ -7,6 +7,7 @@ sample_interval_s = 120
 bench_temp_c = 25.0
 bios_password_file = ""
 firmware_write_needs_reboot = false
+sample_log_years = 3
 
 [profiles.daily]
 label = "Daily"

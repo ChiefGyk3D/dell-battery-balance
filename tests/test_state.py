@@ -28,6 +28,39 @@ class SampleLogPath(unittest.TestCase):
         ts = datetime.datetime(2027, 6, 1, tzinfo=datetime.timezone.utc).timestamp()
         self.assertEqual(st.sample_log_path(ts).name, "samples-2027.csv")
 
+    def _touch(self, *names):
+        for n in names:
+            with open(os.path.join(self.tmp.name, n), "w") as fh:
+                fh.write("x\n")
+
+    def test_prune_keeps_the_newest_n_years_and_nothing_else_is_touched(self):
+        from dbb import state as st
+        self._touch("samples-2022.csv", "samples-2023.csv", "samples-2024.csv",
+                    "samples-2025.csv", "samples-2026.csv", "samples.csv",
+                    "samples-2019.csv.bak", "state.json", "metrics.prom")
+        now = datetime.datetime(2026, 9, 13, tzinfo=datetime.timezone.utc).timestamp()
+        removed = st.prune_sample_logs(now, keep_years=3)
+        self.assertEqual(removed, ["samples-2022.csv", "samples-2023.csv"])
+        left = sorted(os.listdir(self.tmp.name))
+        self.assertEqual(left, ["metrics.prom", "samples-2019.csv.bak", "samples-2024.csv",
+                                "samples-2025.csv", "samples-2026.csv", "samples.csv", "state.json"])
+
+    def test_prune_with_nothing_old_removes_nothing(self):
+        from dbb import state as st
+        self._touch("samples-2026.csv")
+        now = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc).timestamp()
+        self.assertEqual(st.prune_sample_logs(now, keep_years=1), [])
+        self.assertTrue(os.path.exists(os.path.join(self.tmp.name, "samples-2026.csv")))
+
+    def test_prune_of_a_missing_state_dir_is_a_no_op(self):
+        from dbb import state as st
+        os.environ["DBB_STATE_DIR"] = os.path.join(self.tmp.name, "nope")
+        for m in list(sys.modules):
+            if m.startswith("dbb"):
+                del sys.modules[m]
+        from dbb import state as st2
+        self.assertEqual(st2.prune_sample_logs(0.0, keep_years=3), [])
+
 
 class EventIds(unittest.TestCase):
     def setUp(self):
