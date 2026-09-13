@@ -122,7 +122,8 @@ def integrate(state, s):
             hours = dt / 3600.0
             if gap and not (last["ac_online"] == 1 and s["ac_online"] == 1):
                 continue
-            soc_eff = soc if not gap else (soc + (prev["capacity"] or soc)) / 2.0
+            prev_soc = prev["capacity"] if prev["capacity"] is not None else soc
+            soc_eff = soc if not gap else (soc + prev_soc) / 2.0
             slot["calendar_score"] += hours * calendar_stress(soc_eff, temp_dc / 10.0)
             slot["soc_hours"] += hours
             slot["soc_hours_sum"] += hours * soc_eff

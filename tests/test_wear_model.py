@@ -109,6 +109,46 @@ class AcRunTracking(unittest.TestCase):
         self.assertEqual(s["ac_run_start_ts"], 50)
 
 
+class GapAccrual(unittest.TestCase):
+    def mk(self, ts, ac, capacity, charge_now):
+        one = lambda cap, c: dict(status="Full", capacity=cap, charge_now=c,
+                                   charge_full_uah=4600000, charge_full_design_uah=4600000,
+                                   voltage_now_uv=11400000, voltage_min_design_uv=11400000,
+                                   current_now_ua=0, temp_dc=313, charge_now_uah=c)
+        # BAT1 stays fully charged and idle throughout, so it never
+        # interferes with the BAT0 assertions below.
+        return dict(ts=ts, boot_id="b", ac_online=ac,
+                    bats={"BAT0": one(capacity, charge_now), "BAT1": one(100, 4600000)})
+
+    def test_ac_bounded_gap_accrues_at_mean_soc(self):
+        from dbb import wear, state as st
+        s = st.new_state()
+        wear.integrate(s, self.mk(0, 1, 100, 4600000))
+        wear.integrate(s, self.mk(4 * 3600, 1, 60, 2760000))
+        slot = s["slots"]["BAT0"]
+        self.assertAlmostEqual(slot["soc_hours"], 4.0, places=6)
+        self.assertAlmostEqual(slot["soc_hours_sum"], 4.0 * 80, places=6)
+        self.assertGreater(slot["calendar_score"], 0)
+
+    def test_battery_side_gap_skips_accrual_but_counts_deltas(self):
+        from dbb import wear, state as st
+        s = st.new_state()
+        wear.integrate(s, self.mk(0, 1, 100, 4600000))
+        wear.integrate(s, self.mk(4 * 3600, 0, 60, 2760000))
+        slot = s["slots"]["BAT0"]
+        self.assertEqual(slot["soc_hours"], 0)
+        self.assertEqual(slot["calendar_score"], 0)
+        self.assertEqual(slot["discharge_uah"], 4600000 - 2760000)
+
+    def test_zero_previous_soc_is_averaged_not_ignored(self):
+        from dbb import wear, state as st
+        s = st.new_state()
+        wear.integrate(s, self.mk(0, 1, 0, 0))
+        wear.integrate(s, self.mk(4 * 3600, 1, 50, 2300000))
+        slot = s["slots"]["BAT0"]
+        self.assertAlmostEqual(slot["soc_hours_sum"], 4.0 * 25, places=6)
+
+
 class Events(unittest.TestCase):
     def test_bounded(self):
         from dbb import state as st
