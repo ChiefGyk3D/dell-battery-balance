@@ -268,18 +268,31 @@ def cmd_profile_delete(args):
 
 def cmd_config_get(args):
     state, cfg, _ = _view()
-    if not args.key:
-        print(cfg_mod.emit(cfg), end="")
-        return
     node = cfg
-    for p in args.key.split("."):
-        if not isinstance(node, dict) or p not in node:
-            die(f"error: no key {args.key!r}")
-        node = node[p]
-    if isinstance(node, dict):
+    if args.key:
+        for p in args.key.split("."):
+            if not isinstance(node, dict) or p not in node:
+                die(f"error: no key {args.key!r}")
+            node = node[p]
+    if args.json:
+        print(json.dumps(node, indent=2, sort_keys=True))
+    elif not args.key:
+        print(cfg_mod.emit(cfg), end="")
+    elif isinstance(node, dict):
         print(cfg_mod.emit(node) if "general" in node else json.dumps(node, indent=2))
     else:
         print(node if not isinstance(node, bool) else str(node).lower())
+
+
+def _load_candidate(args):
+    """The file named on the command line, as TOML or (--json) JSON. Never
+    falls back to defaults: a missing path must not replace the real config."""
+    try:
+        if args.json:
+            return cfg_mod.load_json(args.path)
+        return cfg_mod.load(args.path, must_exist=True)
+    except cfg_mod.ConfigError as e:
+        die(f"error: {e}")
 
 
 def cmd_config_set(args):
@@ -297,24 +310,15 @@ def cmd_config_set(args):
 
 
 def cmd_config_validate(args):
-    try:
-        cfg_mod.load(args.path, must_exist=True)
-    except cfg_mod.ConfigError as e:
-        die(f"error: {e}")
+    _load_candidate(args)
     print("ok")
 
 
 def cmd_config_apply(args):
     # The applied file replaces the whole config -- same strict, full-schema
     # semantics as config.load()/config validate, not a partial overlay.
-    # must_exist=True: a missing/unreadable path must never silently fall
-    # back to default_config() here, or this REPLACES the real config with
-    # defaults and destroys custom profiles and settings.
     state = load_state()
-    try:
-        cfg = cfg_mod.load(args.path, must_exist=True)
-    except cfg_mod.ConfigError as e:
-        die(f"error: {e}")
+    cfg = _load_candidate(args)
     _save_config(cfg, state, "config apply")
     add_event(state, "config", f"applied from {Path(args.path).name}")
     save_state(state)
@@ -454,10 +458,13 @@ def build_parser():
     sp = pr.add_parser("delete"); sp.add_argument("name"); sp.set_defaults(func=cmd_profile_delete, cls="profile-delete")
 
     cf = sub.add_parser("config", help="general settings").add_subparsers(dest="ccmd", required=True)
-    sp = cf.add_parser("get"); sp.add_argument("key", nargs="?"); sp.set_defaults(func=cmd_config_get, cls="control")
+    sp = cf.add_parser("get"); sp.add_argument("key", nargs="?"); sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_config_get, cls="control")
     sp = cf.add_parser("set"); sp.add_argument("assignments", nargs="+", metavar="key=value"); sp.set_defaults(func=cmd_config_set, cls="config")
-    sp = cf.add_parser("validate"); sp.add_argument("path"); sp.set_defaults(func=cmd_config_validate, cls="config")
-    sp = cf.add_parser("apply"); sp.add_argument("path"); sp.set_defaults(func=cmd_config_apply, cls="config")
+    sp = cf.add_parser("validate"); sp.add_argument("--json", action="store_true", help="the file is JSON with the TOML's shape"); sp.add_argument("path")
+    sp.set_defaults(func=cmd_config_validate, cls="config")
+    sp = cf.add_parser("apply"); sp.add_argument("--json", action="store_true", help="the file is JSON with the TOML's shape"); sp.add_argument("path")
+    sp.set_defaults(func=cmd_config_apply, cls="config")
 
     pk = sub.add_parser("pack", help="physical pack registry").add_subparsers(dest="kcmd", required=True)
     pk.add_parser("list").set_defaults(func=cmd_pack_list, cls="control")

@@ -203,6 +203,26 @@ def load(path=CONFIG_FILE, must_exist=False):
     return cfg
 
 
+def load_json(path):
+    """A candidate config as a JSON document with the TOML's exact shape.
+
+    The applet's config dialog submits these so that only Python ever emits
+    TOML. Same strict validation as load(); the path is named on any I/O or
+    parse error so the dialog can show it."""
+    path = Path(path)
+    try:
+        with path.open("rb") as fh:
+            cfg = json.load(fh)
+    except OSError as e:
+        raise ConfigError(f"{path}: not found or unreadable") from e
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise ConfigError(f"{path}: {e}") from e
+    if not isinstance(cfg, dict):
+        raise ConfigError(f"{path}: top level must be an object")
+    validate(cfg)
+    return cfg
+
+
 def _val(v):
     if isinstance(v, bool):
         return "true" if v else "false"

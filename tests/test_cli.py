@@ -264,6 +264,62 @@ class ConfigCmd(CliBase):
         j = json.loads(out)
         self.assertEqual(j["profile"]["name"], "daily")
 
+    def test_get_json_is_the_whole_config(self):
+        code, out, err = self.run_cli("config", "get", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out), self.config.default_config())
+
+    def test_get_json_one_key(self):
+        code, out, _ = self.run_cli("config", "get", "profiles.field.bands", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), {"all": [90, 100]})
+
+    def _json_candidate(self, mutate):
+        cfg = self.config.default_config()
+        mutate(cfg)
+        p = os.path.join(self.tmp.name, "new.json")
+        with open(p, "w") as fh:
+            json.dump(cfg, fh)
+        return p, cfg
+
+    def test_apply_json_roundtrip(self):
+        def m(c):
+            c["general"]["deadband_efc"] = 0.7
+            c["profiles"]["daily"]["label"] = "Desk"
+        p, cfg = self._json_candidate(m)
+        code, _, err = self.run_cli("config", "apply", "--json", p)
+        self.assertEqual(code, 0, err)
+        code, out, _ = self.run_cli("config", "get", "--json")
+        self.assertEqual(json.loads(out), cfg)
+
+    def test_validate_json_ok(self):
+        p, _ = self._json_candidate(lambda c: None)
+        code, out, _ = self.run_cli("config", "validate", "--json", p)
+        self.assertEqual(code, 0)
+        self.assertEqual(out.strip(), "ok")
+
+    def test_apply_json_rejects_with_the_key_named(self):
+        p, _ = self._json_candidate(lambda c: c["profiles"]["travel"]["bands"].__setitem__("work", [96, 95]))
+        code, _, err = self.run_cli("config", "apply", "--json", p)
+        self.assertNotEqual(code, 0)
+        self.assertIn("travel", err)
+        self.assertIn("work", err)
+        code, out, _ = self.run_cli("config", "get", "profiles.travel.bands.work", "--json")
+        self.assertEqual(json.loads(out), [80, 95])
+
+    def test_apply_json_garbage_names_the_path(self):
+        p = os.path.join(self.tmp.name, "bad.json")
+        with open(p, "w") as fh:
+            fh.write("{not json")
+        code, _, err = self.run_cli("config", "apply", "--json", p)
+        self.assertNotEqual(code, 0)
+        self.assertIn("bad.json", err)
+
+    def test_apply_json_missing_path(self):
+        code, _, err = self.run_cli("config", "apply", "--json", "/nonexistent/x.json")
+        self.assertNotEqual(code, 0)
+        self.assertIn("not found", err)
+
 
 class StatusDetail(CliBase):
     def test_json_has_the_detail_fields(self):
