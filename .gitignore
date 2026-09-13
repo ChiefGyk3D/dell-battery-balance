@@ -4,3 +4,6 @@ __pycache__/
 state.json
 state.json.tmp
 samples.csv
+
+# Subagent-driven-development scratch (ledger, briefs, review packages)
+.superpowers/
