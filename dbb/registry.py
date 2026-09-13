@@ -215,12 +215,18 @@ def assign(state, slot, name, new=False, now=None, bench_temp_c=25.0):
     _ensure_free(state, name, except_tenure_id=t["id"])
     t["pack"] = name
     p = state["packs"][name]
-    # Carry the bench calendar-aging estimate accrued since this pack was
-    # removed into the NEW open tenure before clearing removed_at_soc/ts --
-    # otherwise it silently vanishes on reinsertion (same formula pack_totals
-    # uses for a still-benched pack).
-    if now is not None and p.get("removed_ts") is not None and p.get("removed_at_soc") is not None:
-        bench_hours = max(0.0, (now - p["removed_ts"]) / 3600.0)
+    # Carry the bench calendar-aging estimate accrued while this pack was out
+    # into the NEW open tenure before clearing removed_at_soc/ts -- otherwise
+    # it silently vanishes on reinsertion (same formula pack_totals uses for
+    # a still-benched pack). Bounded by the tenure's own start, NOT `now`
+    # (when the user happens to answer): the new tenure already accrues real
+    # in-slot calendar every tick from its start onward, so using `now` here
+    # would double-count that stretch -- or, for a pack that never actually
+    # left (a charge_full/design/discontinuity trip alone), the whole
+    # interval.
+    if (t.get("start_ts") is not None and p.get("removed_ts") is not None
+            and p.get("removed_at_soc") is not None):
+        bench_hours = max(0.0, (t["start_ts"] - p["removed_ts"]) / 3600.0)
         t["calendar_score"] += bench_hours * calendar_stress(p["removed_at_soc"], bench_temp_c)
     p["removed_at_soc"], p["removed_ts"] = None, None
     state.get("pending", {}).pop(slot, None)

@@ -348,22 +348,45 @@ class Totals(unittest.TestCase):
 
     def test_bench_calendar_carried_into_new_tenure_on_reassign(self):
         # A has been on the bench since ts=100.0 at 50% (set up above). Move
-        # C out of BAT0, reinsert A there ten hours later, and confirm the
-        # bench-aging estimate lands on the NEW open tenure rather than
-        # vanishing when removed_at_soc/removed_ts get cleared.
+        # C out of BAT0 and reinsert A there ten hours later -- but the user
+        # doesn't answer `pack assign` until FIVE HOURS AFTER THAT. The bound
+        # must be the new tenure's own start (10h out), not the answer time
+        # (15h out): the new tenure already accrues real in-slot calendar
+        # from its start onward, so using the answer time would double-count
+        # the 5h between reinsertion and the answer.
         registry.note_absent(self.s, "BAT0", 300.0)                 # C leaves
-        now = 100.0 + 10 * 3600
-        registry.observe(self.s, "BAT0", bat(), sample(now), None)  # opens a fresh, unidentified tenure
-        registry.assign(self.s, "BAT0", "A", now=now, bench_temp_c=25.0)
+        removed_ts = 100.0
+        reinsert_ts = removed_ts + 10 * 3600
+        answered_ts = removed_ts + 15 * 3600
+        registry.observe(self.s, "BAT0", bat(), sample(reinsert_ts), None)  # opens a fresh, unidentified tenure
+        registry.assign(self.s, "BAT0", "A", now=answered_ts, bench_temp_c=25.0)
         new_t = registry.open_tenure(self.s, "BAT0")
         expected_bench = 10.0 * wear.calendar_stress(50, 25.0)
         self.assertAlmostEqual(new_t["calendar_score"], expected_bench, places=4)
-        tot = registry.pack_totals(self.s, "A", now=now, bench_temp_c=25.0)
+        tot = registry.pack_totals(self.s, "A", now=answered_ts, bench_temp_c=25.0)
         # A's pre-removal tenure had calendar_score 0.0; total is just the
         # carried bench amount, and it is not double-counted now A is in a
         # slot again.
         self.assertAlmostEqual(tot["calendar_score"], expected_bench, places=4)
         self.assertEqual(tot["bench_calendar"], 0.0)
+
+    def test_bench_not_added_when_pack_never_left(self):
+        # A discontinuity trip closes A's tenure and opens a new,
+        # unidentified one starting at the SAME instant -- the pack never
+        # physically left, so removed_ts == the new tenure's start_ts. Even
+        # if the user doesn't answer `pack assign` for hours afterward, no
+        # bench interval must be added.
+        s = st.new_state()
+        registry.observe(s, "BAT0", bat(capacity=50), sample(0), None)
+        registry.assign(s, "BAT0", "A", new=True)
+        registry.observe(s, "BAT0", bat(charge=4500000, capacity=98), sample(1000), 1.0)
+        new_t = registry.open_tenure(s, "BAT0")
+        self.assertIsNone(new_t["pack"])
+        self.assertEqual(s["packs"]["A"]["removed_ts"], 1000.0)
+        self.assertEqual(new_t["start_ts"], 1000.0)
+        before = new_t["calendar_score"]
+        registry.assign(s, "BAT0", "A", now=1000 + 10 * 3600, bench_temp_c=25.0)
+        self.assertEqual(new_t["calendar_score"] - before, 0.0)
 
     def test_pack_totals_with_zero_tenures(self):
         self.s["packs"]["Z"] = {"label": "Z", "first_seen": "x", "retired": False,

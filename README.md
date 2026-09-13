@@ -107,8 +107,8 @@ applet surfaces the same question in its popup, with one of three answers:
 in a slot, on the bench, or retired, plus how long a benched pack has been
 sitting and at what SoC. It also lists any pending questions. A pack removed
 above ~70% SoC — poor storage practice for Li-ion — is flagged once, as a
-`warning` event at removal time shown by `report` (and the applet's events
-list); it is not an ongoing flag on `pack list` rows. When one bench pack
+`warning` event at removal time shown by `report`; it is not an ongoing
+flag on `pack list` rows. When one bench pack
 has drifted more than `general.deadband_efc` behind the most-worn inserted
 pack, `status`/`report`/`pack list` print a rotation hint naming which pack
 to swap in and which to pull.
