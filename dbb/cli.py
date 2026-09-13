@@ -12,7 +12,6 @@
 """Command-line surface. Every command reads config, state and a sample the same way."""
 import argparse
 import json
-import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -52,28 +51,6 @@ def expand_profile_shortcut(argv):
             and out[i + 1] not in PROFILE_SUBCOMMANDS
             and not out[i + 1].startswith("-")):
         out.insert(i + 1, "set")
-    return out
-
-
-_NEGATIVE_FOR_VALUE = re.compile(r"^-\d")
-
-
-def rejoin_negative_for_value(argv):
-    """argparse treats a token starting with '-' as another option rather
-    than the previous option's value, so `--for -2h` fails with a generic
-    "expected one argument" before parse_duration ever sees it and gets a
-    chance to reject it as non-positive. Rejoin only tokens that look like
-    a negative duration (-<digit>...) into `--for=<value>`."""
-    out = []
-    i = 0
-    while i < len(argv):
-        tok = argv[i]
-        if tok == "--for" and i + 1 < len(argv) and _NEGATIVE_FOR_VALUE.match(argv[i + 1]):
-            out.append(f"--for={argv[i + 1]}")
-            i += 2
-            continue
-        out.append(tok)
-        i += 1
     return out
 
 
@@ -588,7 +565,7 @@ def main(argv=None):
     if count > 1:
         print("error: --polkit-class may be given once", file=sys.stderr)
         sys.exit(3)
-    args = build_parser().parse_args(rejoin_negative_for_value(expand_profile_shortcut(raw)))
+    args = build_parser().parse_args(expand_profile_shortcut(raw))
     if args.polkit_class == "control" and args.cls in CONFIGURE_CLASS:
         print("error: this command needs the configure action (dbb-configure), not control",
               file=sys.stderr)

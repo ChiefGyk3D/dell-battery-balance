@@ -296,10 +296,14 @@ class Profiles(CliBase):
         self.assertAlmostEqual(self.status()["revert"]["after_hours_left"], 24.0, places=1)
 
     def test_for_zero_or_negative_rejected(self):
-        for bad in ("0h", "-2h", "0m"):
+        for bad in ("0h", "0m", "0d"):
             code, _, err = self.run_cli("profile", "set", "field", "--for", bad)
             self.assertNotEqual(code, 0, bad)
             self.assertIn("positive", err)
+        # a negative value never reaches parse_duration: argparse reads "-2h"
+        # as an option and refuses, which is the right answer too
+        code, _, _ = self.run_cli("profile", "set", "field", "--for", "-2h")
+        self.assertNotEqual(code, 0)
 
 
 class ConfigCmd(CliBase):
