@@ -34,6 +34,25 @@ PlasmoidItem {
         return /^[A-Za-z0-9_-]{1,16}$/.test(s || "");
     }
 
+    // "3 min ago" for an ISO-8601 timestamp; "" when it will not parse.
+    function ageText(iso) {
+        if (!iso) return "";
+        const t = Date.parse(iso);
+        if (isNaN(t)) return "";
+        const m = Math.round((Date.now() - t) / 60000);
+        if (m < 1) return i18n("just now");
+        if (m < 60) return i18n("%1 min ago", m);
+        const h = Math.round(m / 60);
+        if (h < 48) return i18n("%1 h ago", h);
+        return i18n("%1 d ago", Math.round(h / 24));
+    }
+
+    // A number with a unit, or the shared "no data yet" placeholder.
+    function fmtNum(v, dp, unit) {
+        if (v === null || v === undefined) return i18n("no data yet");
+        return i18n("%1%2", Number(v).toFixed(dp), unit);
+    }
+
     Plasmoid.icon: fieldMode ? "battery-profile-performance"
                              : "battery-profile-powersave"
 

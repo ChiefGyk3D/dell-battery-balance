@@ -447,6 +447,17 @@ class StatusDetail(CliBase):
         self.assertEqual(last["kind"], "profile")
         self.assertIsInstance(last["id"], int)
 
+    def test_json_start_stop_are_ints(self):
+        # The applet's Ceiling row compares this live read-back against
+        # fw.requested (numbers) with ===; a string here always mismatches
+        # a correctly-applied ceiling.
+        self.run_cli("sample")
+        j = self.status()
+        self.assertIsInstance(j["bats"]["BAT0"]["start"], int)
+        self.assertIsInstance(j["bats"]["BAT0"]["stop"], int)
+        self.assertEqual(j["bats"]["BAT0"]["start"], 50)
+        self.assertEqual(j["bats"]["BAT0"]["stop"], 90)
+
 
 class PolkitClass(CliBase):
     def test_control_class_refuses_configure_commands(self):

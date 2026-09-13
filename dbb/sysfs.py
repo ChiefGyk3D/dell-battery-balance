@@ -167,6 +167,13 @@ def apply_band(bat, start, stop, password=None, dry_run=True):
     return f"{bat} -> Custom {start}/{stop}", None
 
 
+def _to_int_or_none(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def read_applied(bat):
     """Best-effort read-back of what the firmware actually holds."""
     mode_attr, start_attr, stop_attr = SYSMAN_ATTRS[bat]
@@ -177,6 +184,8 @@ def read_applied(bat):
         out["charge_types"] = read_str(PS / bat / "charge_types")
         out["start"] = read_str(PS / bat / "charge_control_start_threshold")
         out["stop"] = read_str(PS / bat / "charge_control_end_threshold")
+    out["start"] = _to_int_or_none(out["start"])
+    out["stop"] = _to_int_or_none(out["stop"])
     return out
 
 
