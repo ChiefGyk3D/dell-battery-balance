@@ -100,6 +100,14 @@ class Validation(unittest.TestCase):
         self.cfg["general"]["deadband_efc"] = "half"
         self.assertRejects("general.deadband_efc")
 
+    def test_unknown_top_level_key(self):
+        self.cfg["bogus"] = 1
+        self.assertRejects("bogus")
+
+    def test_revert_unknown_key(self):
+        self.cfg["profiles"]["field"]["revert"]["typo"] = 1
+        self.assertRejects("profiles.field.revert.typo")
+
 
 class LoadSave(unittest.TestCase):
     def test_load_missing_returns_default(self):
@@ -150,6 +158,39 @@ class SetDotted(unittest.TestCase):
         config.set_dotted(cfg, "general.bogus", "1")
         with self.assertRaises(config.ConfigError):
             config.validate(cfg)
+
+    def test_all_digit_profile_name_stays_string(self):
+        cfg = config.default_config()
+        cfg["profiles"]["2024"] = cfg["profiles"]["daily"]
+        config.set_dotted(cfg, "general.active_profile", "2024")
+        self.assertIsInstance(cfg["general"]["active_profile"], str)
+        self.assertEqual(cfg["general"]["active_profile"], "2024")
+        config.validate(cfg)
+
+    def test_label_with_comma_stays_one_string(self):
+        cfg = config.default_config()
+        config.set_dotted(cfg, "profiles.daily.label", "Desk, Home")
+        self.assertIsInstance(cfg["profiles"]["daily"]["label"], str)
+        self.assertEqual(cfg["profiles"]["daily"]["label"], "Desk, Home")
+        config.validate(cfg)
+
+    def test_auto_balance_true_uppercase(self):
+        cfg = config.default_config()
+        config.set_dotted(cfg, "general.auto_balance", "TRUE")
+        self.assertIs(cfg["general"]["auto_balance"], True)
+        config.validate(cfg)
+
+    def test_band_with_one_value_raises(self):
+        cfg = config.default_config()
+        with self.assertRaises(config.ConfigError) as cm:
+            config.set_dotted(cfg, "profiles.daily.bands.neutral", "50")
+        self.assertIn("profiles.daily.bands.neutral", str(cm.exception))
+
+    def test_deadband_invalid_float_raises(self):
+        cfg = config.default_config()
+        with self.assertRaises(config.ConfigError) as cm:
+            config.set_dotted(cfg, "general.deadband_efc", "abc")
+        self.assertIn("general.deadband_efc", str(cm.exception))
 
 
 if __name__ == "__main__":

@@ -84,8 +84,10 @@ def _typed(path, v, t):
 
 
 def validate(cfg):
-    if set(cfg) - {"general", "profiles"}:
-        raise ConfigError(f"unknown top-level keys: {sorted(set(cfg) - {'general', 'profiles'})}")
+    unknown_top = set(cfg) - {"general", "profiles"}
+    if unknown_top:
+        key = sorted(unknown_top)[0]
+        raise ConfigError(f"{key}: unknown top-level key")
     g = cfg.get("general", {})
     for k in g:
         if k not in GENERAL_KEYS:
@@ -234,20 +236,66 @@ def save(cfg, path=CONFIG_FILE):
         pass
 
 
-def _coerce(raw):
+def _resolve_type(key):
+    """Resolve the expected type for a dotted key path, or None if unknown."""
+    parts = key.split(".")
+    if len(parts) == 2 and parts[0] == "general":
+        return GENERAL_KEYS.get(parts[1])
+    if len(parts) >= 3 and parts[0] == "profiles":
+        name = parts[1]
+        rest = parts[2:]
+        if len(rest) == 1:
+            k = rest[0]
+            if k == "label" or k == "description":
+                return str
+            elif k == "balancing":
+                return bool
+        elif len(rest) == 2 and rest[0] == "bands":
+            return list
+        elif len(rest) >= 2 and rest[0] == "revert":
+            if rest[1] in ("after_hours", "on_ac_hours"):
+                return float
+            elif rest[1] == "to":
+                return str
+        elif len(rest) >= 2 and rest[0] == "pins":
+            if len(rest) == 3 and rest[2] == "role":
+                return str
+            elif len(rest) == 3 and rest[2] in ("start", "stop"):
+                return int
+    return None
+
+
+def _coerce_to_type(raw, target_type, key):
+    """Coerce raw string to target_type, or raise ConfigError."""
     s = raw.strip()
-    if s.lower() in ("true", "false"):
-        return s.lower() == "true"
-    if "," in s:
-        return [_coerce(x) for x in s.split(",")]
-    try:
-        return int(s)
-    except ValueError:
-        pass
-    try:
-        return float(s)
-    except ValueError:
+    if target_type is str:
         return s
+    elif target_type is bool:
+        if s.lower() == "true":
+            return True
+        elif s.lower() == "false":
+            return False
+        else:
+            raise ConfigError(f"{key}: expected true or false, got {s!r}")
+    elif target_type is int:
+        try:
+            return int(s)
+        except ValueError:
+            raise ConfigError(f"{key}: expected int, got {s!r}")
+    elif target_type is float:
+        try:
+            return float(s)
+        except ValueError:
+            raise ConfigError(f"{key}: expected float, got {s!r}")
+    elif target_type is list:
+        parts = s.split(",")
+        if len(parts) != 2:
+            raise ConfigError(f"{key}: expected two values as a,b, got {s!r}")
+        try:
+            return [int(p.strip()) for p in parts]
+        except ValueError:
+            raise ConfigError(f"{key}: expected two ints as a,b, got {s!r}")
+    return s
 
 
 def set_dotted(cfg, key, raw):
@@ -257,4 +305,8 @@ def set_dotted(cfg, key, raw):
         node = node.setdefault(p, {})
         if not isinstance(node, dict):
             raise ConfigError(f"{key}: {p} is not a table")
-    node[parts[-1]] = _coerce(raw)
+    target_type = _resolve_type(key)
+    if target_type is not None:
+        node[parts[-1]] = _coerce_to_type(raw, target_type, key)
+    else:
+        node[parts[-1]] = raw
