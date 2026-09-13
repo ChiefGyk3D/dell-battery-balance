@@ -360,11 +360,15 @@ def set_dotted(cfg, key, raw):
     #   meaningless (validate() rejects it).
     word = raw.strip().lower()
     if len(parts) == 3 and parts[0] == "profiles" and parts[2] == "revert" and word in OFF_WORDS:
-        cfg.get("profiles", {}).get(parts[1], {}).pop("revert", None)
+        if parts[1] not in cfg.get("profiles", {}):
+            raise ConfigError(f"{key}: no profile {parts[1]!r}")
+        cfg["profiles"][parts[1]].pop("revert", None)
         return
     if (len(parts) == 4 and parts[0] == "profiles" and parts[2] == "revert"
             and parts[3] in ("after_hours", "on_ac_hours") and word in OFF_WORDS + ("0", "0.0")):
-        prof = cfg.get("profiles", {}).get(parts[1], {})
+        if parts[1] not in cfg.get("profiles", {}):
+            raise ConfigError(f"{key}: no profile {parts[1]!r}")
+        prof = cfg["profiles"][parts[1]]
         rv = prof.get("revert")
         if rv:
             rv.pop(parts[3], None)

@@ -12,6 +12,7 @@
 """Command-line surface. Every command reads config, state and a sample the same way."""
 import argparse
 import json
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -54,6 +55,28 @@ def expand_profile_shortcut(argv):
     return out
 
 
+_NEGATIVE_FOR_VALUE = re.compile(r"^-\d")
+
+
+def rejoin_negative_for_value(argv):
+    """argparse treats a token starting with '-' as another option rather
+    than the previous option's value, so `--for -2h` fails with a generic
+    "expected one argument" before parse_duration ever sees it and gets a
+    chance to reject it as non-positive. Rejoin only tokens that look like
+    a negative duration (-<digit>...) into `--for=<value>`."""
+    out = []
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--for" and i + 1 < len(argv) and _NEGATIVE_FOR_VALUE.match(argv[i + 1]):
+            out.append(f"--for={argv[i + 1]}")
+            i += 2
+            continue
+        out.append(tok)
+        i += 1
+    return out
+
+
 def _one_off_hours(args):
     """--stay -> 0.0 (no automatic revert this switch); --for -> hours;
     neither -> None (the profile's own [revert] table applies)."""
@@ -85,7 +108,10 @@ def parse_duration(text):
     t = text.strip().lower()
     if not t or t[-1] not in units:
         raise ValueError(f"bad duration {text!r}; use e.g. 90m, 8h, 3d")
-    return float(t[:-1]) * units[t[-1]]
+    hours = float(t[:-1]) * units[t[-1]]
+    if hours <= 0:
+        raise ValueError(f"bad duration {text!r}; must be positive")
+    return hours
 
 
 def load_config_or_snapshot(state):
@@ -505,7 +531,8 @@ def build_parser():
     sp = pr.add_parser("delete"); sp.add_argument("name"); sp.set_defaults(func=cmd_profile_delete, cls="profile-delete")
 
     cf = sub.add_parser("config", help="general settings").add_subparsers(dest="ccmd", required=True)
-    sp = cf.add_parser("get"); sp.add_argument("key", nargs="?"); sp.add_argument("--json", action="store_true")
+    sp = cf.add_parser("get"); sp.add_argument("key", nargs="?")
+    sp.add_argument("--json", action="store_true", help="print the value as JSON (what the applet's config dialog reads)")
     sp.set_defaults(func=cmd_config_get, cls="control")
     sp = cf.add_parser("set"); sp.add_argument("assignments", nargs="+", metavar="key=value"); sp.set_defaults(func=cmd_config_set, cls="config")
     sp = cf.add_parser("validate"); sp.add_argument("--json", action="store_true", help="the file is JSON with the TOML's shape"); sp.add_argument("path")
@@ -561,7 +588,7 @@ def main(argv=None):
     if count > 1:
         print("error: --polkit-class may be given once", file=sys.stderr)
         sys.exit(3)
-    args = build_parser().parse_args(expand_profile_shortcut(raw))
+    args = build_parser().parse_args(rejoin_negative_for_value(expand_profile_shortcut(raw)))
     if args.polkit_class == "control" and args.cls in CONFIGURE_CLASS:
         print("error: this command needs the configure action (dbb-configure), not control",
               file=sys.stderr)

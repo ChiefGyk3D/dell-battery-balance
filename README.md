@@ -508,6 +508,13 @@ clipping, sysfs-hiccup pending).
   and the applet advances its notified-id watermark to the highest one it
   sees, so anything older than that window is skipped silently. The four
   notified kinds are rare enough that this is unlikely to matter in practice.
+- With notifications switched off, the applet still advances its watermark,
+  so events that happened while they were off are not raised when they are
+  switched back on.
+- The Profiles and General pages submit the whole config as loaded when the
+  page opened, so a profile switch that happens while the dialog is open (a
+  popup button, an auto-revert) is overwritten by Apply — reopen the dialog
+  after switching.
 
 ## Tests
 

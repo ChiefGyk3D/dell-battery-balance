@@ -295,6 +295,12 @@ class Profiles(CliBase):
         self.run_cli("profile", "set", "travel")
         self.assertAlmostEqual(self.status()["revert"]["after_hours_left"], 24.0, places=1)
 
+    def test_for_zero_or_negative_rejected(self):
+        for bad in ("0h", "-2h", "0m"):
+            code, _, err = self.run_cli("profile", "set", "field", "--for", bad)
+            self.assertNotEqual(code, 0, bad)
+            self.assertIn("positive", err)
+
 
 class ConfigCmd(CliBase):
     def test_get_set_roundtrip(self):
@@ -421,6 +427,14 @@ class ConfigCmd(CliBase):
         logs = [f for f in os.listdir(sd) if f.startswith("samples-")]
         self.assertEqual(len(logs), 1)
         self.assertEqual(os.stat(os.path.join(sd, logs[0])).st_mode & 0o777, 0o664)
+
+    def test_set_revert_none_on_unknown_profile_is_an_error(self):
+        code, _, err = self.run_cli("config", "set", "profiles.nosuch.revert=none")
+        self.assertNotEqual(code, 0)
+        self.assertIn("nosuch", err)
+        code, _, err = self.run_cli("config", "set", "profiles.nosuch.revert.after_hours=0")
+        self.assertNotEqual(code, 0)
+        self.assertIn("nosuch", err)
 
 
 class StatusDetail(CliBase):

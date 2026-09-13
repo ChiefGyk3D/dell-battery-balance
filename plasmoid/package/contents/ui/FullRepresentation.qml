@@ -114,7 +114,7 @@ PlasmaExtras.Representation {
                     spacing: 0
                     visible: have
 
-                    property bool expanded: Plasmoid.configuration.expandDetails
+                    property bool expanded: !!Plasmoid.configuration.expandDetails
 
                     RowLayout {
                         Layout.fillWidth: true

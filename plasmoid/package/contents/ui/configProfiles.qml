@@ -61,13 +61,16 @@ KCM.SimpleKCM {
             page.message = i18n("Profiles applied.");
             page.messageType = Kirigami.MessageType.Positive;
         }
+        // re-arm Apply: the dialog disabled it when saveConfig() ran, before this result arrived
         onFailed: m => {
             page.message = m;
             page.messageType = Kirigami.MessageType.Error;
+            page.configurationChanged();
         }
         onCancelled: {
             page.message = i18n("Not applied: authorisation was cancelled.");
             page.messageType = Kirigami.MessageType.Information;
+            page.configurationChanged();
         }
     }
     Component.onCompleted: backend.load()
@@ -193,6 +196,9 @@ KCM.SimpleKCM {
                         const r = page.cfg.profiles[n].revert;
                         if (r && r.to === page.sel) r.to = "previous";
                     }
+                    // the CLI's profile delete does the same reset
+                    if (page.cfg.general.previous_profile === page.sel)
+                        page.cfg.general.previous_profile = "daily";
                     delete page.cfg.profiles[page.sel];
                     page.sel = "daily";
                     page.touch();

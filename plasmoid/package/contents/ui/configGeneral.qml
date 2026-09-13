@@ -39,13 +39,16 @@ KCM.SimpleKCM {
             page.message = i18n("Applied.");
             page.messageType = Kirigami.MessageType.Positive;
         }
+        // re-arm Apply: the dialog disabled it when saveConfig() ran, before this result arrived
         onFailed: m => {
             page.message = m;
             page.messageType = Kirigami.MessageType.Error;
+            page.configurationChanged();
         }
         onCancelled: {
             page.message = i18n("Not applied: authorisation was cancelled.");
             page.messageType = Kirigami.MessageType.Information;
+            page.configurationChanged();
         }
     }
     Component.onCompleted: backend.load()
