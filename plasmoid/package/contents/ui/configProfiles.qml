@@ -37,13 +37,22 @@ KCM.SimpleKCM {
     }
 
     // The picker's currentIndex binding breaks on the first user selection
-    // (standard ComboBox behaviour), so keep it in sync by hand.
-    onSelChanged: picker.currentIndex = names.indexOf(sel)
+    // (standard ComboBox behaviour), so keep it in sync by hand. The editor
+    // is re-created per selection so every control starts from a fresh
+    // binding to the newly selected profile -- keyed on `sel` (a string)
+    // rather than on `p`, because a var property signals change on every
+    // re-evaluation, which touch() forces after each edit. The active
+    // check reads `cfg`/`sel` directly rather than the derived `p`: inside
+    // this very handler `p`'s own binding has not yet caught up with the
+    // `sel` change that triggered it (it still reflects the previous
+    // selection for one more read), which would leave the editor
+    // uncreated on the very first selection after load.
+    onSelChanged: {
+        picker.currentIndex = names.indexOf(sel);
+        editor.active = false;
+        editor.active = !!(cfg && sel && cfg.profiles[sel]);
+    }
     onNamesChanged: picker.currentIndex = names.indexOf(sel)
-
-    // The editor is re-created per selection so every control starts from a
-    // fresh binding to the newly selected profile.
-    onPChanged: { editor.active = false; editor.active = !!p; }
 
     ConfigBackend {
         id: backend
@@ -178,6 +187,12 @@ KCM.SimpleKCM {
                 enabled: !!page.p && page.sel !== "daily"
                     && page.sel !== page.cfg.general.active_profile
                 onClicked: {
+                    // a revert target that disappears falls back to the previous profile,
+                    // as the tool itself does for previous_profile
+                    for (const n of Object.keys(page.cfg.profiles)) {
+                        const r = page.cfg.profiles[n].revert;
+                        if (r && r.to === page.sel) r.to = "previous";
+                    }
                     delete page.cfg.profiles[page.sel];
                     page.sel = "daily";
                     page.touch();
