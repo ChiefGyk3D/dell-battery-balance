@@ -35,6 +35,16 @@ PlasmaExtras.Representation {
                 Layout.preferredWidth: Layout.preferredHeight
             }
             PlasmaComponents.ToolButton {
+                icon.name: "object-align-horizontal-center"
+                display: QQC2.AbstractButton.IconOnly
+                text: i18n("Balance now")
+                enabled: !root.acting
+                onClicked: root.act("balance --apply", false)
+                PlasmaComponents.ToolTip {
+                    text: i18n("Apply the charge ceilings the wear data recommends")
+                }
+            }
+            PlasmaComponents.ToolButton {
                 icon.name: "view-refresh"
                 display: QQC2.AbstractButton.IconOnly
                 text: i18n("Refresh")
@@ -54,6 +64,15 @@ PlasmaExtras.Representation {
             anchors.top: parent.top
             spacing: Kirigami.Units.smallSpacing
 
+            // ---- config error --------------------------------------------
+            Kirigami.InlineMessage {
+                Layout.fillWidth: true
+                visible: !!(root.info && root.info.config_error)
+                type: Kirigami.MessageType.Error
+                text: (root.info && root.info.config_error)
+                    ? i18n("Config error: %1", root.info.config_error) : ""
+            }
+
             // ---- field mode warning ------------------------------------
             Kirigami.InlineMessage {
                 Layout.fillWidth: true
@@ -65,7 +84,7 @@ PlasmaExtras.Representation {
                         text: i18n("Restore")
                         icon.name: "edit-undo"
                         enabled: !root.acting
-                        onTriggered: root.act("restore")
+                        onTriggered: root.act("restore", false)
                     }
                 ]
             }
@@ -166,6 +185,25 @@ PlasmaExtras.Representation {
                                 return i18n("run as root to read");
                             }
                         }
+
+                        PlasmaComponents.Label {
+                            text: i18n("Firmware:")
+                            font: Kirigami.Theme.smallFont
+                            opacity: 0.8
+                        }
+                        PlasmaComponents.Label {
+                            Layout.fillWidth: true
+                            font: Kirigami.Theme.smallFont
+                            text: {
+                                const fw = (root.info && root.info.firmware)
+                                    ? root.info.firmware[row.modelData] : null;
+                                if (!fw || !fw.observed) return i18n("unknown");
+                                const o = fw.observed;
+                                const r = fw.requested;
+                                const mismatch = r && (o[0] !== r[0] || o[1] !== r[1]);
+                                return o[0] + "/" + o[1] + (mismatch ? i18n(" (mismatch)") : "");
+                            }
+                        }
                     }
                 }
             }
@@ -224,29 +262,34 @@ PlasmaExtras.Representation {
 
     footer: PlasmaExtras.PlasmoidHeading {
         position: PlasmaComponents.ToolBar.Footer
-        contentItem: RowLayout {
+        contentItem: ColumnLayout {
             spacing: Kirigami.Units.smallSpacing
-
-            PlasmaComponents.Button {
-                Layout.fillWidth: true
-                text: i18n("Balance now")
-                icon.name: "object-align-horizontal-center"
-                enabled: !root.acting
-                onClicked: root.act("balance --apply")
-                PlasmaComponents.ToolTip {
-                    text: i18n("Apply the charge ceilings the wear data recommends")
+            PlasmaComponents.Label {
+                visible: !!(root.info && root.info.revert)
+                font: Kirigami.Theme.smallFont
+                text: {
+                    if (!root.info || !root.info.revert) return "";
+                    const r = root.info.revert;
+                    const parts = [];
+                    if (r.after_hours_left !== null) parts.push(i18n("%1 h", Math.max(0, r.after_hours_left).toFixed(1)));
+                    if (r.on_ac_hours_left !== null) parts.push(i18n("%1 h on AC", Math.max(0, r.on_ac_hours_left).toFixed(1)));
+                    return i18n("Reverts to %1 in %2", r.to, parts.join(i18n(" or ")));
                 }
             }
-            PlasmaComponents.Button {
+            Flow {
                 Layout.fillWidth: true
-                text: root.fieldMode ? i18n("Restore") : i18n("Field mode")
-                icon.name: root.fieldMode ? "edit-undo" : "battery-profile-performance"
-                enabled: !root.acting
-                onClicked: root.act(root.fieldMode ? "restore" : "field")
-                PlasmaComponents.ToolTip {
-                    text: root.fieldMode
-                        ? i18n("Return to the wear-balancing ceilings")
-                        : i18n("Charge both packs to 100% for maximum runtime")
+                spacing: Kirigami.Units.smallSpacing
+                Repeater {
+                    model: root.info ? root.info.profiles : []
+                    delegate: PlasmaComponents.Button {
+                        required property var modelData
+                        text: modelData.label
+                        checkable: true
+                        checked: modelData.active
+                        enabled: !root.acting
+                        icon.name: modelData.type === "fixed" ? "battery-profile-performance" : "battery-profile-powersave"
+                        onClicked: root.act("profile set " + modelData.name, false)
+                    }
                 }
             }
         }

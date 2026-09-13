@@ -12,6 +12,8 @@ PlasmoidItem {
     id: root
 
     readonly property string cli: "/usr/local/bin/dell-battery-balance"
+    readonly property string controlExe: "/usr/local/libexec/dbb-control"
+    readonly property string configureExe: "/usr/local/libexec/dbb-configure"
 
     // Parsed output of `status --json`; null until the first poll returns.
     property var info: null
@@ -64,14 +66,14 @@ PlasmoidItem {
         exec.run(cli + " status --json");
     }
 
-    // Privileged actions go through pkexec, which resolves the polkit action
-    // from the annotated exec path. --apply is what actually writes firmware.
-    function act(subcommand) {
-        if (acting) {
-            return;
-        }
+    // Privileged actions go through the scoped wrappers so the CLI never
+    // runs as root: pkexec --user drops to the dell-battery-balance
+    // service account, and the wrapper enforces its own action class.
+    function act(subcommand, configure) {
+        if (acting) return;
         acting = true;
-        exec.run("pkexec " + cli + " " + subcommand);
+        const exe = configure ? configureExe : controlExe;
+        exec.run("pkexec --user dell-battery-balance " + exe + " " + subcommand);
     }
 
     function handleResult(source, payload) {
