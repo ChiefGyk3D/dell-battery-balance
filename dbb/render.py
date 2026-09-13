@@ -98,13 +98,13 @@ def fmt_status(state, s, cfg):
     packs = registry.all_packs(state, time.time(), cfg["general"]["bench_temp_c"])
     if packs:
         lines.append("")
-        lines.append(f"{'pack':8} {'EFC':>6} {'cal.':>7} {'where':>8} {'note'}")
+        lines.append(f"{'pack':16} {'EFC':>6} {'cal.':>7} {'where':>8} {'note'}")
         for r in packs:
             where = r["in_slot"] or ("retired" if r["retired"] else "bench")
             note = ""
             if not r["in_slot"] and not r["retired"] and r["removed_at_soc"] is not None:
                 note = f"out {r['bench_hours']:.0f}h at {r['removed_at_soc']}%"
-            lines.append(f"{r['name']:8} {r['efc']:>6.2f} {r['calendar_score']:>7.1f} {where:>8} {note}")
+            lines.append(f"{r['name']:16} {r['efc']:>6.2f} {r['calendar_score']:>7.1f} {where:>8} {note}")
     hint = registry.rotation_hint(state, cfg["general"]["deadband_efc"], time.time(), cfg["general"]["bench_temp_c"])
     if hint:
         lines.append(f"swap in next: {hint['swap_in']} for {hint['replace']} ({hint['behind_by_efc']:.2f} EFC behind)")

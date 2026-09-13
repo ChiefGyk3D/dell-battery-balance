@@ -317,13 +317,17 @@ def _registry_op(fn, *a, **kw):
 
 def cmd_pack_list(args):
     state, cfg, _ = _view()
-    rows = registry.all_packs(state, time.time(), cfg["general"]["bench_temp_c"])
+    now = time.time()
+    rows = registry.all_packs(state, now, cfg["general"]["bench_temp_c"])
     if not rows:
         print("no packs registered yet; run 'pack new SLOT NAME' to name the inserted ones")
     for r in rows:
         where = r["in_slot"] or ("retired" if r["retired"] else "bench")
         extra = f"  out {r['bench_hours']:.0f}h at {r['removed_at_soc']}%" if (where == "bench" and r["removed_at_soc"] is not None) else ""
-        print(f"{r['name']:8} EFC {r['efc']:6.2f}  cal {r['calendar_score']:7.1f}  {where:8}{extra}")
+        print(f"{r['name']:16} EFC {r['efc']:6.2f}  cal {r['calendar_score']:7.1f}  {where:8}{extra}")
+    hint = registry.rotation_hint(state, cfg["general"]["deadband_efc"], now, cfg["general"]["bench_temp_c"])
+    if hint:
+        print(f"swap in next: {hint['swap_in']} for {hint['replace']} ({hint['behind_by_efc']:.2f} EFC behind)")
     for slot, q in sorted(state.get("pending", {}).items()):
         print(f"PENDING {slot}: guess={q['guess']} ({q['reason']}"
               + (f", was {q['previous_pack']}" if q.get("previous_pack") else "") + ")")
@@ -372,11 +376,10 @@ def cmd_reset(args):
         state["tenures"] = [t for t in state["tenures"] if t["pack"] != args.pack]
         del state["packs"][args.pack]
         add_event(state, "reset", f"pack {args.pack} and its tenures deleted")
-    elif args.all:
+    else:
+        assert args.all   # argparse's mutually-exclusive required group guarantees one of the three
         from dbb.state import new_state
         state = new_state()
-    else:
-        die("error: give --slot SLOT, --pack NAME or --all")
     save_state(state)
 
 
@@ -426,7 +429,7 @@ def build_parser():
     sp.set_defaults(func=cmd_pack_new, cls="control")
     sp = pk.add_parser("same"); sp.add_argument("slot", choices=BATS)
     sp.set_defaults(func=cmd_pack_same, cls="control")
-    sp = pk.add_parser("reassign"); sp.add_argument("tenure_id", type=int); sp.add_argument("name")
+    sp = pk.add_parser("reassign"); sp.add_argument("tenure_id", type=int, metavar="tenure-id"); sp.add_argument("name")
     sp.set_defaults(func=cmd_pack_reassign, cls="pack-admin")
     sp = pk.add_parser("rename"); sp.add_argument("old"); sp.add_argument("new")
     sp.set_defaults(func=cmd_pack_rename, cls="pack-admin")
@@ -438,7 +441,8 @@ def build_parser():
     sub.add_parser("field", help="alias: profile set field").set_defaults(func=cmd_field, cls="control")
     sub.add_parser("restore", help="alias: profile set <previous>").set_defaults(func=cmd_restore, cls="control")
     sp = sub.add_parser("reset", help="clear counters")
-    sp.add_argument("--slot", choices=BATS); sp.add_argument("--pack", metavar="NAME"); sp.add_argument("--all", action="store_true")
+    g = sp.add_mutually_exclusive_group(required=True)
+    g.add_argument("--slot", choices=BATS); g.add_argument("--pack", metavar="NAME"); g.add_argument("--all", action="store_true")
     sp.set_defaults(func=cmd_reset, cls="reset")
     return p
 

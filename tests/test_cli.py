@@ -351,6 +351,34 @@ class Packs(CliBase):
         self.run_cli("pack", "new", "BAT0", "A"); self.run_cli("pack", "new", "BAT1", "B")
         code, out, _ = self.run_cli("pack", "list")
         self.assertEqual(code, 0); self.assertIn("A", out); self.assertIn("BAT0", out)
+        # Force a rotation-worthy divergence: B goes to the bench (low EFC),
+        # A's open tenure gets a large discharge written directly into
+        # state.json -- well past the default deadband_efc (0.5).
+        self.fs.bat("BAT1", present=0)
+        self.run_cli("sample")
+        state_path = os.path.join(os.environ["DBB_STATE_DIR"], "state.json")
+        with open(state_path) as fh:
+            st = json.load(fh)
+        for t in st["tenures"]:
+            if t["pack"] == "A" and t["end_ts"] is None:
+                t["discharge_uah"] = t["design_uah"] * 2.0
+        with open(state_path, "w") as fh:
+            json.dump(st, fh)
+        code, out, _ = self.run_cli("pack", "list")
+        self.assertEqual(code, 0, out)
+        self.assertIn("swap in next: B", out)
+
+    def test_reset_flags_are_mutually_exclusive(self):
+        self.run_cli("sample")
+        tid = self.status()["bats"]["BAT0"]["tenure_id"]
+        code, _, err = self.run_cli("reset", "--slot", "BAT0", "--pack", "A")
+        self.assertEqual(code, 2, err)
+        self.assertEqual(self.status()["bats"]["BAT0"]["tenure_id"], tid)
+
+    def test_reset_without_a_flag_is_rejected(self):
+        self.run_cli("sample")
+        code, _, err = self.run_cli("reset")
+        self.assertEqual(code, 2, err)
 
     def test_admin_commands_need_configure_class(self):
         self.run_cli("sample"); self.run_cli("pack", "new", "BAT0", "A")
