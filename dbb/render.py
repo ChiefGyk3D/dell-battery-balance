@@ -43,6 +43,16 @@ def _revert_info(cfg, state, name, prof, now):
     }
 
 
+def _display_efc_cal(state, t, now, bench_temp_c):
+    """(efc, calendar_score) to SHOW for slot's open tenure `t`: the pack
+    total when identified (what the policy actually balances on), else the
+    tenure's own figures."""
+    if t["pack"]:
+        tot = registry.pack_totals(state, t["pack"], now, bench_temp_c)
+        return tot["efc"], tot["calendar_score"]
+    return efc(t), t["calendar_score"]
+
+
 def fmt_status(state, s, cfg):
     lines = []
     err = state.get("config_error")
@@ -55,7 +65,9 @@ def fmt_status(state, s, cfg):
     name = cfg["general"]["active_profile"]
     profile = cfg["profiles"].get(name, {})
     lines.append(f"profile: {profile.get('label', name)} ({name}, {profile_type(profile)})")
-    rv = _revert_info(cfg, state, name, profile, time.time())
+    now = time.time()
+    bench_t = cfg["general"]["bench_temp_c"]
+    rv = _revert_info(cfg, state, name, profile, now)
     if rv:
         left = rv["after_hours_left"] if rv["after_hours_left"] is not None else rv["on_ac_hours_left"]
         if left is not None:
@@ -66,36 +78,38 @@ def fmt_status(state, s, cfg):
     lines.append(hdr)
     lines.append("-" * len(hdr))
 
+    slot_vals = {}
     for b in BATS:
         v = s["bats"].get(b)
-        slot = registry.slot_counters(state, b)
+        t = registry.open_tenure(state, b)
+        if t is not None:
+            slot_vals[b] = _display_efc_cal(state, t, now, bench_t)
         if not v:
             lines.append(f"{b:6} {'absent':>20}")
             continue
         nominal = v["voltage_min_design_uv"]
-        t = registry.open_tenure(state, b)
-        now = f"{(t['pack'] if t and t['pack'] else '?')} {v['capacity']}% {v['status']}"
-        if not slot:
-            lines.append(f"{b:6} {now:>20} {'(no history)':>7}")
+        now_col = f"{(t['pack'] if t and t['pack'] else '?')} {v['capacity']}% {v['status']}"
+        if not t:
+            lines.append(f"{b:6} {now_col:>20} {'(no history)':>7}")
             continue
-        mean_soc = (slot["soc_hours_sum"] / slot["soc_hours"]) if slot["soc_hours"] else 0.0
-        pct90 = (100.0 * slot["seconds_ge_90"] / slot["seconds_observed"]) \
-            if slot["seconds_observed"] else 0.0
+        e, cal = slot_vals[b]
+        mean_soc = (t["soc_hours_sum"] / t["soc_hours"]) if t["soc_hours"] else 0.0
+        pct90 = (100.0 * t["seconds_ge_90"] / t["seconds_observed"]) \
+            if t["seconds_observed"] else 0.0
         lines.append(
-            f"{b:6} {now:>20} {efc(slot):>7.2f} "
-            f"{wh(slot['discharge_uah'], nominal):>10.1f}Wh "
-            f"{slot['calendar_score']:>10.1f} {mean_soc:>8.1f}% {pct90:>7.1f}%")
+            f"{b:6} {now_col:>20} {e:>7.2f} "
+            f"{wh(t['discharge_uah'], nominal):>10.1f}Wh "
+            f"{cal:>10.1f} {mean_soc:>8.1f}% {pct90:>7.1f}%")
 
     lines.append("")
-    both = [b for b in BATS if registry.slot_counters(state, b)]
+    both = [b for b in BATS if b in slot_vals]
     if len(both) == 2:
-        s0, s1 = registry.slot_counters(state, both[0]), registry.slot_counters(state, both[1])
-        d = abs(efc(s0) - efc(s1))
-        lines.append(f"cycle divergence: {d:.2f} EFC")
-        cd = abs(s0["calendar_score"] - s1["calendar_score"])
-        lines.append(f"calendar divergence: {cd:.1f}")
+        e0, c0 = slot_vals[both[0]]
+        e1, c1 = slot_vals[both[1]]
+        lines.append(f"cycle divergence: {abs(e0 - e1):.2f} EFC")
+        lines.append(f"calendar divergence: {abs(c0 - c1):.1f}")
 
-    packs = registry.all_packs(state, time.time(), cfg["general"]["bench_temp_c"])
+    packs = registry.all_packs(state, now, bench_t)
     if packs:
         lines.append("")
         lines.append(f"{'pack':16} {'EFC':>6} {'cal.':>7} {'where':>8} {'note'}")
@@ -105,7 +119,7 @@ def fmt_status(state, s, cfg):
             if not r["in_slot"] and not r["retired"] and r["removed_at_soc"] is not None:
                 note = f"out {r['bench_hours']:.0f}h at {r['removed_at_soc']}%"
             lines.append(f"{r['name']:16} {r['efc']:>6.2f} {r['calendar_score']:>7.1f} {where:>8} {note}")
-    hint = registry.rotation_hint(state, cfg["general"]["deadband_efc"], time.time(), cfg["general"]["bench_temp_c"])
+    hint = registry.rotation_hint(state, cfg["general"]["deadband_efc"], now, bench_t)
     if hint:
         lines.append(f"swap in next: {hint['swap_in']} for {hint['replace']} ({hint['behind_by_efc']:.2f} EFC behind)")
     pend = state.get("pending", {})
@@ -152,6 +166,8 @@ def state_json(state, s, cfg):
     """Machine-readable view of everything `status` prints, for the applet."""
     name = cfg["general"]["active_profile"]
     prof = cfg["profiles"][name]
+    now = time.time()
+    bench_t = cfg["general"]["bench_temp_c"]
     out = {
         "ts": now_iso(),
         "ac_online": s["ac_online"],
@@ -162,12 +178,13 @@ def state_json(state, s, cfg):
         "field_mode": profile_type(prof) == "fixed" and prof["bands"]["all"][1] >= 95,
     }
 
+    slot_vals = {}
     for b in BATS:
         v = s["bats"].get(b)
+        t = registry.open_tenure(state, b)
         if not v:
             out["bats"][b] = {"present": False}
             continue
-        slot = registry.slot_counters(state, b)
         applied = read_applied(b)
         entry = {
             "present": True,
@@ -179,32 +196,38 @@ def state_json(state, s, cfg):
             "stop": applied.get("stop"),
             "efc": None,
             "calendar_score": None,
+            "tenure_efc": None,
+            "tenure_calendar_score": None,
             "mean_soc": None,
             "pct_ge90": None,
             "discharged_wh": None,
         }
-        t = registry.open_tenure(state, b)
         entry["pack"] = t["pack"] if t else None
         entry["tenure_id"] = t["id"] if t else None
         entry["pending"] = state.get("pending", {}).get(b)
-        if slot:
-            entry["efc"] = round(efc(slot), 3)
-            entry["calendar_score"] = round(slot["calendar_score"], 2)
+        if t:
+            e, cal = _display_efc_cal(state, t, now, bench_t)
+            slot_vals[b] = (e, cal)
+            entry["efc"] = round(e, 3)
+            entry["calendar_score"] = round(cal, 2)
+            entry["tenure_efc"] = round(efc(t), 3)
+            entry["tenure_calendar_score"] = round(t["calendar_score"], 2)
             entry["discharged_wh"] = round(
-                wh(slot["discharge_uah"], v["voltage_min_design_uv"]), 2)
-            if slot["soc_hours"]:
+                wh(t["discharge_uah"], v["voltage_min_design_uv"]), 2)
+            if t["soc_hours"]:
                 entry["mean_soc"] = round(
-                    slot["soc_hours_sum"] / slot["soc_hours"], 1)
-            if slot["seconds_observed"]:
+                    t["soc_hours_sum"] / t["soc_hours"], 1)
+            if t["seconds_observed"]:
                 entry["pct_ge90"] = round(
-                    100.0 * slot["seconds_ge_90"] / slot["seconds_observed"], 1)
+                    100.0 * t["seconds_ge_90"] / t["seconds_observed"], 1)
         out["bats"][b] = entry
 
-    both = [b for b in BATS if registry.slot_counters(state, b)]
+    both = [b for b in BATS if b in slot_vals]
     if len(both) == 2:
-        s0, s1 = registry.slot_counters(state, both[0]), registry.slot_counters(state, both[1])
-        out["divergence_efc"] = round(abs(efc(s0) - efc(s1)), 3)
-        out["divergence_calendar"] = round(abs(s0["calendar_score"] - s1["calendar_score"]), 2)
+        e0, c0 = slot_vals[both[0]]
+        e1, c1 = slot_vals[both[1]]
+        out["divergence_efc"] = round(abs(e0 - e1), 3)
+        out["divergence_calendar"] = round(abs(c0 - c1), 2)
     else:
         out["divergence_efc"] = None
         out["divergence_calendar"] = None
@@ -214,18 +237,16 @@ def state_json(state, s, cfg):
                       "description": prof.get("description", ""), "previous": g["previous_profile"]}
     out["profiles"] = [{"name": n, "label": p["label"], "type": profile_type(p), "active": n == name}
                        for n, p in sorted(cfg["profiles"].items())]
-    out["revert"] = _revert_info(cfg, state, name, prof, time.time())
+    out["revert"] = _revert_info(cfg, state, name, prof, now)
     out["firmware"] = state.get("firmware", {})
     out["config_error"] = state.get("config_error")
     out["events"] = state.get("events", [])[-10:]
 
-    now = time.time()
-    bench_t = cfg["general"]["bench_temp_c"]
     out["packs"] = registry.all_packs(state, now, bench_t)
     out["pending"] = state.get("pending", {})
     out["rotation"] = registry.rotation_hint(state, cfg["general"]["deadband_efc"], now, bench_t)
 
-    res = policy.resolve(cfg, state, s, time.time())
+    res = policy.resolve(cfg, state, s, now)
     out["recommendation"] = {
         "why": res.why,
         "roles": res.roles,

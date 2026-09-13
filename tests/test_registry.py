@@ -188,6 +188,14 @@ class Detection(unittest.TestCase):
         self.assertEqual(self.s["packs"]["B"]["removed_at_soc"], 98)
         self.assertEqual(self.s["packs"]["B"]["removed_ts"], 300.0)
 
+    def test_design_capacity_change_trips(self):
+        # A different design capacity is as strong a signal as a charge_full
+        # change or a discontinuity, and must be its own reason.
+        t, changed = registry.observe(self.s, "BAT1", bat(charge=2300000, capacity=50, design=5200000),
+                                       sample(120), 120.0)
+        self.assertTrue(changed)
+        self.assertEqual(self.s["pending"]["BAT1"]["reason"], "design")
+
     def test_none_design_uah_does_not_raise_and_self_heals(self):
         # A transient sysfs read failure can leave charge_full_design_uah
         # unreadable; the slot must not crash and must recover once a good
@@ -241,6 +249,17 @@ class Identification(unittest.TestCase):
         with self.assertRaises(registry.RegistryError):
             registry.same(self.s, "BAT0")   # never had a previous pack
 
+    def test_same_accepted_even_when_guess_is_unsure(self):
+        registry.assign(self.s, "BAT1", "B", new=True)
+        registry.note_absent(self.s, "BAT1", 100.0)
+        # A big jump after reinsertion makes the guess "unsure", not "same" --
+        # `pack same` must still be usable; the guess only labels the
+        # suggestion, it never gates which answers are legal.
+        registry.observe(self.s, "BAT1", bat(charge=4600000, capacity=100), sample(7200), 7100.0)
+        self.assertEqual(self.s["pending"]["BAT1"]["guess"], "unsure")
+        t = registry.same(self.s, "BAT1")
+        self.assertEqual(t["pack"], "B")
+
     def test_reassign_moves_history(self):
         registry.assign(self.s, "BAT0", "A", new=True)
         registry.assign(self.s, "BAT1", "B", new=True)
@@ -257,6 +276,16 @@ class Identification(unittest.TestCase):
         with self.assertRaises(registry.RegistryError):
             registry.reassign(self.s, 99, "A")
 
+    def test_reassign_of_open_tenure_clears_that_slots_pending(self):
+        registry.assign(self.s, "BAT0", "A", new=True)
+        # Trip a discontinuity: closes tenure 1 (still "A"), opens tenure 3
+        # (unidentified) in BAT0, and leaves BAT0 pending.
+        registry.observe(self.s, "BAT0", bat(charge=4500000, capacity=98), sample(120), 120.0)
+        tid = registry.open_tenure(self.s, "BAT0")["id"]
+        self.assertIn("BAT0", self.s["pending"])
+        registry.reassign(self.s, tid, "A")
+        self.assertNotIn("BAT0", self.s["pending"])
+
     def test_retire_and_rename(self):
         registry.assign(self.s, "BAT0", "A", new=True)
         with self.assertRaises(registry.RegistryError):
@@ -272,6 +301,15 @@ class Identification(unittest.TestCase):
         self.assertIn("Alpha", self.s["packs"]); self.assertNotIn("A", self.s["packs"])
         self.assertEqual(registry.tenure_by_id(self.s, 1)["pack"], "Alpha")
         self.assertEqual(registry.packs_in_slots(self.s), {})
+
+    def test_rename_rewrites_pending_previous_pack(self):
+        registry.assign(self.s, "BAT1", "B", new=True)
+        registry.note_absent(self.s, "BAT1", 100.0)
+        # A big jump keeps BAT1 pending (guess "unsure") with previous_pack B.
+        registry.observe(self.s, "BAT1", bat(charge=4600000, capacity=100), sample(7200), 7100.0)
+        self.assertEqual(self.s["pending"]["BAT1"]["previous_pack"], "B")
+        registry.rename_pack(self.s, "B", "Beta")
+        self.assertEqual(self.s["pending"]["BAT1"]["previous_pack"], "Beta")
 
 
 class Totals(unittest.TestCase):
@@ -307,6 +345,32 @@ class Totals(unittest.TestCase):
         self.assertAlmostEqual(tot["bench_calendar"], 10.0 * wear.calendar_stress(50, 25.0))
         hot = registry.pack_totals(self.s, "A", now=100.0 + 10 * 3600, bench_temp_c=35.0)
         self.assertGreater(hot["bench_calendar"], tot["bench_calendar"])
+
+    def test_bench_calendar_carried_into_new_tenure_on_reassign(self):
+        # A has been on the bench since ts=100.0 at 50% (set up above). Move
+        # C out of BAT0, reinsert A there ten hours later, and confirm the
+        # bench-aging estimate lands on the NEW open tenure rather than
+        # vanishing when removed_at_soc/removed_ts get cleared.
+        registry.note_absent(self.s, "BAT0", 300.0)                 # C leaves
+        now = 100.0 + 10 * 3600
+        registry.observe(self.s, "BAT0", bat(), sample(now), None)  # opens a fresh, unidentified tenure
+        registry.assign(self.s, "BAT0", "A", now=now, bench_temp_c=25.0)
+        new_t = registry.open_tenure(self.s, "BAT0")
+        expected_bench = 10.0 * wear.calendar_stress(50, 25.0)
+        self.assertAlmostEqual(new_t["calendar_score"], expected_bench, places=4)
+        tot = registry.pack_totals(self.s, "A", now=now, bench_temp_c=25.0)
+        # A's pre-removal tenure had calendar_score 0.0; total is just the
+        # carried bench amount, and it is not double-counted now A is in a
+        # slot again.
+        self.assertAlmostEqual(tot["calendar_score"], expected_bench, places=4)
+        self.assertEqual(tot["bench_calendar"], 0.0)
+
+    def test_pack_totals_with_zero_tenures(self):
+        self.s["packs"]["Z"] = {"label": "Z", "first_seen": "x", "retired": False,
+                                "notes": "", "removed_at_soc": None, "removed_ts": None}
+        tot = registry.pack_totals(self.s, "Z", now=0.0, bench_temp_c=25.0)
+        self.assertEqual(tot["efc"], 0.0)
+        self.assertEqual(tot["tenures"], 0)
 
     def test_efc_for_slot_uses_pack_total(self):
         self.assertAlmostEqual(registry.efc_for_slot(self.s, "BAT1"), 1.4)

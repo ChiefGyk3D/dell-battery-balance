@@ -340,6 +340,61 @@ class Packs(CliBase):
         code, _, err = self.run_cli("pack", "same", "BAT1"); self.assertEqual(code, 0, err)
         self.assertEqual(self.status()["bats"]["BAT1"]["pack"], "B")
 
+    def test_both_packs_out_and_swapped_back_in_is_detected(self):
+        # Pulling BOTH packs and reinserting them swapped must not be missed
+        # just because sample_all() returned nothing while they were out.
+        self.run_cli("sample")
+        self.run_cli("pack", "new", "BAT0", "A")
+        self.run_cli("pack", "new", "BAT1", "B")
+        self.fs.bat("BAT0", present=0)
+        self.fs.bat("BAT1", present=0)
+        code, _, _ = self.run_cli("sample")   # exit non-zero is fine: no batteries present
+        self.assertNotEqual(code, 0)
+        # Reinsert with the charges/capacities exchanged (as if the physical
+        # packs had been swapped between slots).
+        self.fs.bat("BAT0", capacity=60, charge_now=2760000, status="Discharging")
+        self.fs.bat("BAT1", capacity=100, charge_now=4600000, status="Full")
+        self.run_cli("sample")
+        j = self.status()
+        self.assertEqual(j["pending"]["BAT0"]["reason"], "insert")
+        self.assertEqual(j["pending"]["BAT1"]["reason"], "insert")
+
+    def test_pack_totals_used_for_displayed_efc_not_tenure_only(self):
+        self.run_cli("sample")
+        self.run_cli("pack", "new", "BAT0", "A")
+        self.run_cli("pack", "new", "BAT1", "B")
+        state_path = os.path.join(os.environ["DBB_STATE_DIR"], "state.json")
+        with open(state_path) as fh:
+            st = json.load(fh)
+        for t in st["tenures"]:
+            if t["pack"] == "A" and t["end_ts"] is None:
+                t["discharge_uah"] = t["design_uah"] * 1.0
+        with open(state_path, "w") as fh:
+            json.dump(st, fh)
+        # Bench A, then reinsert it -- a fresh, unidentified tenure opens
+        # with its own EFC at zero.
+        self.fs.bat("BAT0", present=0)
+        self.run_cli("sample")
+        self.fs.bat("BAT0", capacity=50, charge_now=2300000, status="Discharging")
+        self.run_cli("sample")
+        code, _, err = self.run_cli("pack", "same", "BAT0")
+        self.assertEqual(code, 0, err)
+        j = self.status()
+        self.assertAlmostEqual(j["bats"]["BAT0"]["efc"], 1.0, places=2)
+        self.assertEqual(j["bats"]["BAT0"]["tenure_efc"], 0.0)
+
+    def test_report_prints_tenure_table(self):
+        self.run_cli("sample")
+        self.run_cli("pack", "new", "BAT0", "A")
+        code, out, err = self.run_cli("report")
+        self.assertEqual(code, 0, err)
+        lines = out.splitlines()
+        hdr_idx = next(i for i, l in enumerate(lines) if l.startswith("tenure"))
+        self.assertIn("slot", lines[hdr_idx])
+        self.assertIn("EFC", lines[hdr_idx])
+        rows = lines[hdr_idx + 1:]
+        self.assertTrue(any("A" in l.split() for l in rows), rows)
+
     def test_assign_conflict_reported(self):
         self.run_cli("sample")
         self.run_cli("pack", "new", "BAT0", "A")

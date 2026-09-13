@@ -82,9 +82,13 @@ def integrate(state, s):
             registry.note_absent(state, b, s["ts"])
             continue
         t, changed = registry.observe(state, b, v, s, dt)
-        t["samples"] += 1
         if changed:
             changed_slots.add(b)
+        else:
+            # The tick that trips a change opens a brand-new tenure for an
+            # interval that belongs to nobody; counting it as a sample on
+            # that tenure would overstate its data before anything accrued.
+            t["samples"] += 1
 
     if not last:
         _track_ac_run(state, None, s)

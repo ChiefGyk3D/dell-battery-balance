@@ -110,6 +110,9 @@ def occupancy_change(t, v, dt):
     if (v.get("charge_full_uah") and t.get("last_charge_full_uah")
             and v["charge_full_uah"] != t["last_charge_full_uah"]):
         return "charge_full"
+    if (v.get("charge_full_design_uah") and t.get("design_uah")
+            and v["charge_full_design_uah"] != t["design_uah"]):
+        return "design"
     if not t.get("design_uah"):
         return None   # a transient sysfs read failure left us without a yardstick; wait for a good one
     if dt is None or v.get("charge_now_uah") is None or t.get("last_charge_uah") is None:
@@ -197,7 +200,7 @@ def _new_pack(state, name):
                             "notes": "", "removed_at_soc": None, "removed_ts": None}
 
 
-def assign(state, slot, name, new=False):
+def assign(state, slot, name, new=False, now=None, bench_temp_c=25.0):
     t = open_tenure(state, slot)
     if t is None:
         raise RegistryError(f"no pack present in {slot}")
@@ -212,18 +215,25 @@ def assign(state, slot, name, new=False):
     _ensure_free(state, name, except_tenure_id=t["id"])
     t["pack"] = name
     p = state["packs"][name]
+    # Carry the bench calendar-aging estimate accrued since this pack was
+    # removed into the NEW open tenure before clearing removed_at_soc/ts --
+    # otherwise it silently vanishes on reinsertion (same formula pack_totals
+    # uses for a still-benched pack).
+    if now is not None and p.get("removed_ts") is not None and p.get("removed_at_soc") is not None:
+        bench_hours = max(0.0, (now - p["removed_ts"]) / 3600.0)
+        t["calendar_score"] += bench_hours * calendar_stress(p["removed_at_soc"], bench_temp_c)
     p["removed_at_soc"], p["removed_ts"] = None, None
     state.get("pending", {}).pop(slot, None)
     add_event(state, "pack", f"{slot}: tenure {t['id']} identified as {name}")
     return t
 
 
-def same(state, slot):
+def same(state, slot, now=None, bench_temp_c=25.0):
     pending = state.get("pending", {}).get(slot)
     prev = pending.get("previous_pack") if pending else None
     if not prev:
         raise RegistryError(f"{slot}: no previous pack to confirm; use 'pack assign' or 'pack new'")
-    return assign(state, slot, prev)
+    return assign(state, slot, prev, now=now, bench_temp_c=bench_temp_c)
 
 
 def reassign(state, tenure_id, name):

@@ -14,12 +14,13 @@ import argparse
 import json
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dbb import VERSION, apply as apply_mod, config as cfg_mod, policy, registry, render
 from dbb.state import add_event, append_log, load_state, now_iso, save_state
 from dbb.sysfs import BATS, sample_all
-from dbb.wear import integrate
+from dbb.wear import efc, integrate
 
 CONFIGURE_CLASS = {"config", "profile-create", "profile-edit", "profile-delete", "reset", "pack-admin"}
 
@@ -95,6 +96,13 @@ def cmd_tick(args):
     state = load_state()
     sample = sample_all()
     if not sample["bats"]:
+        # Both packs are out -- close their tenures now (instead of leaving
+        # them open) and record this empty sample as `last`, so a reinsertion
+        # (even both packs, swapped) is measured as a fresh "insert" from
+        # this moment rather than a discontinuity dated from before removal.
+        for b in BATS:
+            registry.note_absent(state, b, sample["ts"])
+        state["last"] = sample
         save_state(state)
         return
     integrate(state, sample)
@@ -114,6 +122,10 @@ def cmd_sample(args):
     state = load_state()
     s = sample_all()
     if not s["bats"]:
+        for b in BATS:
+            registry.note_absent(state, b, s["ts"])
+        state["last"] = s
+        save_state(state)
         die("error: no batteries present")
     integrate(state, s)
     save_state(state)
@@ -135,6 +147,12 @@ def cmd_status(args):
         print(render.fmt_status(state, s, cfg))
 
 
+def _iso_or_dash(ts):
+    if ts is None:
+        return "-"
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds")
+
+
 def cmd_report(args):
     state, cfg, s = _view()
     print(render.fmt_status(state, s, cfg))
@@ -147,6 +165,15 @@ def cmd_report(args):
     for slot, rec in sorted(state.get("firmware", {}).items()):
         print(f"  {slot}: requested={rec['requested']} observed={rec['observed']} at {rec['ts']}"
               + (f"  ERROR {rec['error']}" if rec.get("error") else ""))
+    print()
+    print(f"{'tenure':7} {'slot':5} {'pack':5} {'start':20} {'end':20} {'EFC':>6} {'discharged Wh':>14}")
+    for t in sorted(state.get("tenures", []), key=lambda x: x["id"], reverse=True):
+        pack = t["pack"] or "?"
+        start = _iso_or_dash(t.get("start_ts"))
+        end = _iso_or_dash(t.get("end_ts"))
+        nominal = (s["bats"].get(t["slot"]) or {}).get("voltage_min_design_uv")
+        dwh = render.wh(t["discharge_uah"], nominal)
+        print(f"{t['id']:<7} {t['slot']:5} {pack:5} {start:20} {end:20} {efc(t):>6.2f} {dwh:>14.1f}")
 
 
 def cmd_balance(args):
@@ -304,10 +331,18 @@ def cmd_restore(args):
     sys.exit(_switch_and_apply(cfg, state, cfg["general"]["previous_profile"], "cli restore"))
 
 
-def _registry_op(fn, *a, **kw):
+def _registry_op(fn, *a, needs_cfg=False, **kw):
     """Load state, apply a pure registry edit, save. Never samples/integrates:
-    these commands only change identity bookkeeping, not wear counters."""
+    these commands only change identity bookkeeping, not wear counters.
+
+    needs_cfg=True also loads config, so `now`/`bench_temp_c` can be passed
+    to registry ops (assign/same) that carry bench calendar-aging forward.
+    """
     state = load_state()
+    if needs_cfg:
+        cfg = load_config_or_snapshot(state)
+        kw.setdefault("now", time.time())
+        kw.setdefault("bench_temp_c", cfg["general"]["bench_temp_c"])
     try:
         fn(state, *a, **kw)
     except registry.RegistryError as e:
@@ -334,15 +369,15 @@ def cmd_pack_list(args):
 
 
 def cmd_pack_assign(args):
-    _registry_op(registry.assign, args.slot, args.name)
+    _registry_op(registry.assign, args.slot, args.name, needs_cfg=True)
 
 
 def cmd_pack_new(args):
-    _registry_op(registry.assign, args.slot, args.name, new=True)
+    _registry_op(registry.assign, args.slot, args.name, new=True, needs_cfg=True)
 
 
 def cmd_pack_same(args):
-    _registry_op(registry.same, args.slot)
+    _registry_op(registry.same, args.slot, needs_cfg=True)
 
 
 def cmd_pack_reassign(args):
@@ -375,6 +410,9 @@ def cmd_reset(args):
             die(f"error: pack {args.pack} is in {where}; remove it before resetting")
         state["tenures"] = [t for t in state["tenures"] if t["pack"] != args.pack]
         del state["packs"][args.pack]
+        for q in state.get("pending", {}).values():
+            if q.get("previous_pack") == args.pack:
+                q["previous_pack"] = None
         add_event(state, "reset", f"pack {args.pack} and its tenures deleted")
     else:
         assert args.all   # argparse's mutually-exclusive required group guarantees one of the three

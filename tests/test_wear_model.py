@@ -155,6 +155,26 @@ class GapAccrual(unittest.TestCase):
         self.assertAlmostEqual(slot["soc_hours_sum"], 4.0 * 25, places=6)
 
 
+class SamplesCounter(unittest.TestCase):
+    def test_samples_not_incremented_on_the_tick_that_trips_a_change(self):
+        from dbb import state as dbb_state, registry
+        s = dbb_state.new_state()
+        wear.integrate(s, mk(0, 0, DESIGN, DESIGN))              # opens tenures: an "insert" tick, not counted
+        wear.integrate(s, mk(120, 0, DESIGN - 1000, DESIGN))     # ordinary tick
+        t = registry.slot_counters(s, "BAT0")
+        self.assertEqual(t["samples"], 1)
+        # A huge, implausible charge_now jump trips a new, unidentified
+        # tenure for BAT0 -- that tick's interval belongs to nobody (per
+        # observe()'s own contract), so it must not be counted as a sample
+        # on the brand-new tenure either.
+        wear.integrate(s, mk(240, 0, 0, DESIGN))
+        new_t = registry.slot_counters(s, "BAT0")
+        self.assertIsNot(new_t, t)
+        self.assertEqual(new_t["samples"], 0)
+        wear.integrate(s, mk(360, 0, 0, DESIGN))
+        self.assertEqual(registry.slot_counters(s, "BAT0")["samples"], 1)
+
+
 class Events(unittest.TestCase):
     def test_bounded(self):
         from dbb import state as st
