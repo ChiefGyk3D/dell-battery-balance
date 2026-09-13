@@ -11,7 +11,10 @@
 #
 """Human-readable and JSON status views over persisted state and a live sample."""
 
+import time
+
 from dbb import policy
+from dbb.config import profile_type
 from dbb.sysfs import BATS, read_applied
 from dbb.state import STATE_FILE, now_iso
 from dbb.wear import efc
@@ -23,16 +26,38 @@ def wh(uah, uv):
     return (uah / 1e6) * (uv / 1e6)
 
 
+def _revert_info(cfg, state, name, prof, now):
+    rv = (prof or {}).get("revert")
+    if not rv:
+        return None
+    switched = state.get("profile_switched_ts")
+    after = state.get("one_off_revert_hours") or rv.get("after_hours")
+    run = state.get("ac_run_start_ts")
+    return {
+        "to": policy.resolve_revert_target(cfg, name),
+        "after_hours_left": (after - (now - switched) / 3600.0) if (after and switched is not None) else None,
+        "on_ac_hours_left": (rv["on_ac_hours"] - (now - run) / 3600.0) if (rv.get("on_ac_hours") and run is not None) else None,
+    }
+
+
 def fmt_status(state, s, cfg):
     slots = state.get("slots", {})
     lines = []
+    err = state.get("config_error")
+    if err:
+        lines.append(f"CONFIG ERROR: {err}")
     lines.append(f"dell-battery-balance   {now_iso()}")
     lines.append(f"state: {STATE_FILE}")
     ac = "AC connected" if s["ac_online"] else "on battery"
     lines.append(f"power: {ac}")
     name = cfg["general"]["active_profile"]
-    profile = cfg["profiles"][name]
-    lines.append(f"profile: {profile['label']} ({name}, {policy.profile_type(profile)})")
+    profile = cfg["profiles"].get(name, {})
+    lines.append(f"profile: {profile.get('label', name)} ({name}, {profile_type(profile)})")
+    rv = _revert_info(cfg, state, name, profile, time.time())
+    if rv:
+        left = rv["after_hours_left"] if rv["after_hours_left"] is not None else rv["on_ac_hours_left"]
+        if left is not None:
+            lines.append(f"revert in {max(left, 0.0):.1f}h -> {rv['to']}")
     lines.append("")
 
     hdr = f"{'':6} {'now':>16} {'EFC':>7} {'discharged':>12} {'cal.score':>10} {'mean SoC':>9} {'>=90%':>8}"
@@ -77,8 +102,10 @@ def fmt_status(state, s, cfg):
 
     pol = state.get("policy")
     if pol:
+        roles = pol.get("roles") or {}
         lines.append(f"policy applied {pol['ts']}: " +
-                     ", ".join(f"{b}={r}" for b, r in pol["roles"].items()))
+                     (", ".join(f"{b}={r}" for b, r in roles.items())
+                      if roles else f"fixed band ({pol.get('profile', pol.get('mode'))})"))
     else:
         lines.append("policy: never applied")
     return "\n".join(lines)
@@ -87,6 +114,8 @@ def fmt_status(state, s, cfg):
 def state_json(state, s, cfg):
     """Machine-readable view of everything `status` prints, for the applet."""
     slots = state.get("slots", {})
+    name = cfg["general"]["active_profile"]
+    prof = cfg["profiles"][name]
     out = {
         "ts": now_iso(),
         "ac_online": s["ac_online"],
@@ -94,8 +123,7 @@ def state_json(state, s, cfg):
         "sessions": state.get("sessions", 0),
         "drain_first": state.get("discharge_first", {}),
         "policy": state.get("policy"),
-        "field_mode": bool(state.get("policy")
-                           and state["policy"].get("mode") == "field"),
+        "field_mode": profile_type(prof) == "fixed" and prof["bands"]["all"][1] >= 95,
     }
 
     for b in BATS:
@@ -143,12 +171,18 @@ def state_json(state, s, cfg):
         out["divergence_efc"] = None
         out["divergence_calendar"] = None
 
-    name = cfg["general"]["active_profile"]
-    out["profile"] = {"name": name, "label": cfg["profiles"][name]["label"],
-                       "type": policy.profile_type(cfg["profiles"][name])}
+    g = cfg["general"]
+    out["profile"] = {"name": name, "label": prof["label"], "type": profile_type(prof),
+                      "description": prof.get("description", ""), "previous": g["previous_profile"]}
+    out["profiles"] = [{"name": n, "label": p["label"], "type": profile_type(p), "active": n == name}
+                       for n, p in sorted(cfg["profiles"].items())]
+    out["revert"] = _revert_info(cfg, state, name, prof, time.time())
+    out["firmware"] = state.get("firmware", {})
+    out["config_error"] = state.get("config_error")
+    out["events"] = state.get("events", [])[-10:]
 
     roles, why = policy.decide_roles(policy.efc_by_slot(state), cfg["general"]["deadband_efc"])
-    bands_map = cfg["profiles"][name]["bands"]
+    bands_map = prof["bands"]
     out["recommendation"] = {
         "why": why,
         "roles": roles,
