@@ -458,7 +458,13 @@ def cmd_reset(args):
     else:
         assert args.all   # argparse's mutually-exclusive required group guarantees one of the three
         from dbb.state import new_state
+        old_next_event_id = state.get("next_event_id", 1)
         state = new_state()
+        # Event ids are never reused (Task 1 interface contract), so a full
+        # reset must not restart the sequence at 1 -- the applet's KConfig
+        # high-water mark would then skip every subsequent event forever.
+        state["next_event_id"] = old_next_event_id
+        add_event(state, "reset", "all counters, packs and tenures")
     save_state(state)
 
 

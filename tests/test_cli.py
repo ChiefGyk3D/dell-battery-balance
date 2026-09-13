@@ -458,6 +458,15 @@ class StatusDetail(CliBase):
         self.assertEqual(j["bats"]["BAT0"]["start"], 50)
         self.assertEqual(j["bats"]["BAT0"]["stop"], 90)
 
+    def test_reset_all_keeps_event_ids_monotonic(self):
+        self.run_cli("profile", "set", "travel")
+        before = self.status()["events"][-1]["id"]
+        code, _, err = self.run_cli("reset", "--all")
+        self.assertEqual(code, 0, err)
+        j = self.status()
+        self.assertTrue(j["events"])
+        self.assertGreater(j["events"][-1]["id"], before)
+
 
 class PolkitClass(CliBase):
     def test_control_class_refuses_configure_commands(self):

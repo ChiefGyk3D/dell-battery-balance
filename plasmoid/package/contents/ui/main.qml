@@ -89,7 +89,12 @@ PlasmoidItem {
         if (!info || !info.events) return;
         const evs = info.events.filter(e => typeof e.id === "number");
         if (evs.length === 0) return;
-        const seen = plasmoid.configuration.lastNotifiedEventId;
+        // Ids restart only if the state file was replaced by hand (reset
+        // --all keeps the sequence). Treat a visible high id below the
+        // watermark as a fresh state and adopt it silently, like first run.
+        const visibleHigh = Math.max(...evs.map(e => e.id));
+        let seen = plasmoid.configuration.lastNotifiedEventId;
+        if (seen >= 0 && visibleHigh < seen) seen = -1;
         let high = seen;
         for (const ev of evs) {
             if (ev.id <= seen) continue;
