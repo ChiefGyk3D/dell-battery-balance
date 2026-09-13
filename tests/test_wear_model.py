@@ -23,8 +23,8 @@ class WearModelTests(unittest.TestCase):
     def test_three_unplug_cycles(self):
         """Simulate the EC behaviour we actually observed: BAT1 drains first
         to a floor, then BAT0 takes over. Three full unplug/recharge cycles."""
-        st = {"version": 1, "created": "t", "slots": {}, "last": None,
-              "discharge_first": {"BAT0": 0, "BAT1": 0}, "sessions": 0, "policy": None}
+        from dbb import state as dbb_state, registry
+        st = dbb_state.new_state()
 
         t = 0.0
         b0, b1 = DESIGN, DESIGN
@@ -45,11 +45,13 @@ class WearModelTests(unittest.TestCase):
                     b1 = min(DESIGN, b1 + DESIGN * 0.05)
                 wear.integrate(st, mk(t, 1, int(b0), int(b1), "Charging", "Charging"))
 
-        e0, e1 = wear.efc(st["slots"]["BAT0"]), wear.efc(st["slots"]["BAT1"])
+        e0 = wear.efc(registry.slot_counters(st, "BAT0"))
+        e1 = wear.efc(registry.slot_counters(st, "BAT1"))
         self.assertGreater(e1, e0, "draining pack (BAT1) should show more cycle wear")
 
         self.assertGreater(
-            st["slots"]["BAT0"]["calendar_score"], st["slots"]["BAT1"]["calendar_score"],
+            registry.slot_counters(st, "BAT0")["calendar_score"],
+            registry.slot_counters(st, "BAT1")["calendar_score"],
             "idle pack (BAT0) should show a higher calendar score")
 
         self.assertGreater(
@@ -62,9 +64,13 @@ class WearModelTests(unittest.TestCase):
 
     def test_deadband_holds_neutral(self):
         """Near-equal packs must hold neutral rather than flap."""
-        st = {"slots": {"BAT0": wear.blank_slot(DESIGN), "BAT1": wear.blank_slot(DESIGN)}}
-        st["slots"]["BAT0"]["discharge_uah"] = DESIGN * 2.0
-        st["slots"]["BAT1"]["discharge_uah"] = DESIGN * 2.2
+        from dbb import state as dbb_state, registry
+        st = dbb_state.new_state()
+        s = mk(0, 1, 0, 0)
+        t0, _ = registry.observe(st, "BAT0", s["bats"]["BAT0"], s, None)
+        t1, _ = registry.observe(st, "BAT1", s["bats"]["BAT1"], s, None)
+        t0["discharge_uah"] = DESIGN * 2.0
+        t1["discharge_uah"] = DESIGN * 2.2
         roles, _why = policy.decide_roles(policy.efc_by_slot(st), 0.5)
         self.assertEqual(set(roles.values()), {"neutral"})
 
@@ -121,31 +127,31 @@ class GapAccrual(unittest.TestCase):
                     bats={"BAT0": one(capacity, charge_now), "BAT1": one(100, 4600000)})
 
     def test_ac_bounded_gap_accrues_at_mean_soc(self):
-        from dbb import wear, state as st
+        from dbb import wear, state as st, registry
         s = st.new_state()
         wear.integrate(s, self.mk(0, 1, 100, 4600000))
         wear.integrate(s, self.mk(4 * 3600, 1, 60, 2760000))
-        slot = s["slots"]["BAT0"]
+        slot = registry.slot_counters(s, "BAT0")
         self.assertAlmostEqual(slot["soc_hours"], 4.0, places=6)
         self.assertAlmostEqual(slot["soc_hours_sum"], 4.0 * 80, places=6)
         self.assertGreater(slot["calendar_score"], 0)
 
     def test_battery_side_gap_skips_accrual_but_counts_deltas(self):
-        from dbb import wear, state as st
+        from dbb import wear, state as st, registry
         s = st.new_state()
         wear.integrate(s, self.mk(0, 1, 100, 4600000))
         wear.integrate(s, self.mk(4 * 3600, 0, 60, 2760000))
-        slot = s["slots"]["BAT0"]
+        slot = registry.slot_counters(s, "BAT0")
         self.assertEqual(slot["soc_hours"], 0)
         self.assertEqual(slot["calendar_score"], 0)
         self.assertEqual(slot["discharge_uah"], 4600000 - 2760000)
 
     def test_zero_previous_soc_is_averaged_not_ignored(self):
-        from dbb import wear, state as st
+        from dbb import wear, state as st, registry
         s = st.new_state()
         wear.integrate(s, self.mk(0, 1, 0, 0))
         wear.integrate(s, self.mk(4 * 3600, 1, 50, 2300000))
-        slot = s["slots"]["BAT0"]
+        slot = registry.slot_counters(s, "BAT0")
         self.assertAlmostEqual(slot["soc_hours_sum"], 4.0 * 25, places=6)
 
 

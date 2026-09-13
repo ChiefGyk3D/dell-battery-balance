@@ -11,8 +11,6 @@
 #
 """Wear model: cycle counting and calendar-aging stress for each pack."""
 
-import sys
-
 from dbb.state import now_iso
 from dbb.sysfs import BATS
 
@@ -68,34 +66,30 @@ def _track_ac_run(state, last, s):
 
 
 def integrate(state, s):
-    """Fold one sample into the cumulative counters."""
+    """Fold one sample into the open tenure of each present slot."""
+    from dbb import registry   # local import: registry imports wear
     last = state.get("last")
-    state.setdefault("slots", {})
+    dt = None
+    if last:
+        dt = s["ts"] - last["ts"]
+        if dt <= 0:
+            return {"counted": False, "reason": "clock went backwards"}
 
-    for b, v in s["bats"].items():
-        design = v["charge_full_design_uah"]
-        slot = state["slots"].get(b)
-        if slot is None:
-            slot = blank_slot(design)
-            state["slots"][b] = slot
-        # A different pack in the slot invalidates the running totals. These
-        # packs report an identical serial ("88") and ePPID, so a design
-        # capacity change is the only automatic signal available.
-        if design and slot.get("design_uah") and design != slot["design_uah"]:
-            print(f"warning: {b} design capacity changed "
-                  f"({slot['design_uah']} -> {design} uAh); pack may have been "
-                  f"swapped. Run --reset-slot {b} to restart its counters.",
-                  file=sys.stderr)
-        slot["samples"] += 1
+    changed_slots = set()
+    for b in BATS:
+        v = s["bats"].get(b)
+        if not v or v.get("present", 1) != 1:
+            registry.note_absent(state, b, s["ts"])
+            continue
+        t, changed = registry.observe(state, b, v, s, dt)
+        t["samples"] += 1
+        if changed:
+            changed_slots.add(b)
 
     if not last:
         _track_ac_run(state, None, s)
         state["last"] = s
         return {"counted": False, "reason": "first sample"}
-
-    dt = s["ts"] - last["ts"]
-    if dt <= 0:
-        return {"counted": False, "reason": "clock went backwards"}
 
     gap = dt > GAP_FLAG_SECONDS
     first_faller = None
@@ -103,7 +97,9 @@ def integrate(state, s):
 
     for b, v in s["bats"].items():
         prev = last["bats"].get(b)
-        slot = state["slots"][b]
+        slot = registry.open_tenure(state, b)
+        if slot is None or b in changed_slots:
+            continue
         if not prev or prev["charge_now_uah"] is None or v["charge_now_uah"] is None:
             continue
 

@@ -13,7 +13,7 @@
 
 import time
 
-from dbb import policy
+from dbb import policy, registry
 from dbb.config import profile_type
 from dbb.sysfs import BATS, read_applied
 from dbb.state import STATE_FILE, now_iso
@@ -44,7 +44,6 @@ def _revert_info(cfg, state, name, prof, now):
 
 
 def fmt_status(state, s, cfg):
-    slots = state.get("slots", {})
     lines = []
     err = state.get("config_error")
     if err:
@@ -69,7 +68,7 @@ def fmt_status(state, s, cfg):
 
     for b in BATS:
         v = s["bats"].get(b)
-        slot = slots.get(b)
+        slot = registry.slot_counters(state, b)
         if not v:
             lines.append(f"{b:6} {'absent':>16}")
             continue
@@ -87,11 +86,12 @@ def fmt_status(state, s, cfg):
             f"{slot['calendar_score']:>10.1f} {mean_soc:>8.1f}% {pct90:>7.1f}%")
 
     lines.append("")
-    both = [b for b in BATS if b in slots]
+    both = [b for b in BATS if registry.slot_counters(state, b)]
     if len(both) == 2:
-        d = abs(efc(slots[both[0]]) - efc(slots[both[1]]))
+        s0, s1 = registry.slot_counters(state, both[0]), registry.slot_counters(state, both[1])
+        d = abs(efc(s0) - efc(s1))
         lines.append(f"cycle divergence: {d:.2f} EFC")
-        cd = abs(slots[both[0]]["calendar_score"] - slots[both[1]]["calendar_score"])
+        cd = abs(s0["calendar_score"] - s1["calendar_score"])
         lines.append(f"calendar divergence: {cd:.1f}")
 
     first = state.get("discharge_first", {})
@@ -130,7 +130,6 @@ def fmt_status(state, s, cfg):
 
 def state_json(state, s, cfg):
     """Machine-readable view of everything `status` prints, for the applet."""
-    slots = state.get("slots", {})
     name = cfg["general"]["active_profile"]
     prof = cfg["profiles"][name]
     out = {
@@ -148,7 +147,7 @@ def state_json(state, s, cfg):
         if not v:
             out["bats"][b] = {"present": False}
             continue
-        slot = slots.get(b)
+        slot = registry.slot_counters(state, b)
         applied = read_applied(b)
         entry = {
             "present": True,
@@ -177,13 +176,11 @@ def state_json(state, s, cfg):
                     100.0 * slot["seconds_ge_90"] / slot["seconds_observed"], 1)
         out["bats"][b] = entry
 
-    both = [b for b in BATS if b in slots]
+    both = [b for b in BATS if registry.slot_counters(state, b)]
     if len(both) == 2:
-        out["divergence_efc"] = round(
-            abs(efc(slots[both[0]]) - efc(slots[both[1]])), 3)
-        out["divergence_calendar"] = round(
-            abs(slots[both[0]]["calendar_score"]
-                - slots[both[1]]["calendar_score"]), 2)
+        s0, s1 = registry.slot_counters(state, both[0]), registry.slot_counters(state, both[1])
+        out["divergence_efc"] = round(abs(efc(s0) - efc(s1)), 3)
+        out["divergence_calendar"] = round(abs(s0["calendar_score"] - s1["calendar_score"]), 2)
     else:
         out["divergence_efc"] = None
         out["divergence_calendar"] = None

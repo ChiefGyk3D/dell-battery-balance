@@ -1,14 +1,8 @@
 import os, sys, unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
-from dbb import config, policy, state as st, wear
+from dbb import config, policy, registry, state as st
 
 DESIGN = 4600000
-
-
-def slot(efc):
-    s = wear.blank_slot(DESIGN)
-    s["discharge_uah"] = efc * DESIGN
-    return s
 
 
 def sample(ac=1, present=("BAT0", "BAT1")):
@@ -16,6 +10,15 @@ def sample(ac=1, present=("BAT0", "BAT1")):
                charge_full_design_uah=DESIGN, voltage_now_uv=11400000,
                voltage_min_design_uv=11400000, current_now_ua=0, temp_dc=313)
     return dict(ts=1000.0, boot_id="b", ac_online=ac, bats={b: dict(one) for b in present})
+
+
+def seed(state, slot, efc_value):
+    v = dict(status="Full", capacity=80, charge_now_uah=3680000, charge_full_uah=DESIGN,
+             charge_full_design_uah=DESIGN, voltage_now_uv=11400000,
+             voltage_min_design_uv=11400000, current_now_ua=0, temp_dc=313)
+    t, _ = registry.observe(state, slot, v, sample(present=(slot,)), None)
+    t["discharge_uah"] = efc_value * DESIGN
+    return t
 
 
 class Roles(unittest.TestCase):
@@ -36,7 +39,8 @@ class Resolve(unittest.TestCase):
     def setUp(self):
         self.cfg = config.default_config()
         self.state = st.new_state()
-        self.state["slots"] = {"BAT0": slot(1.0), "BAT1": slot(1.0)}
+        seed(self.state, "BAT0", 1.0)
+        seed(self.state, "BAT1", 1.0)
         self.state["profile_switched_ts"] = 0.0
 
     def test_daily_neutral(self):
@@ -46,7 +50,7 @@ class Resolve(unittest.TestCase):
         self.assertIsNone(r.revert)
 
     def test_daily_diverged(self):
-        self.state["slots"]["BAT1"] = slot(2.0)
+        seed(self.state, "BAT1", 2.0)
         r = policy.resolve(self.cfg, self.state, sample(), now=100.0)
         self.assertEqual(r.bands, {"BAT1": (50, 60), "BAT0": (80, 90)})
         self.assertEqual(r.roles, {"BAT1": "protect", "BAT0": "work"})
@@ -75,7 +79,7 @@ class Resolve(unittest.TestCase):
 
     def test_deadband_from_config(self):
         self.cfg["general"]["deadband_efc"] = 2.0
-        self.state["slots"]["BAT1"] = slot(2.5)
+        seed(self.state, "BAT1", 2.5)
         r = policy.resolve(self.cfg, self.state, sample(), now=100.0)
         self.assertEqual(r.roles, {"BAT0": "neutral", "BAT1": "neutral"})
 
@@ -84,7 +88,8 @@ class Revert(unittest.TestCase):
     def setUp(self):
         self.cfg = config.default_config()
         self.state = st.new_state()
-        self.state["slots"] = {"BAT0": slot(1.0), "BAT1": slot(1.0)}
+        seed(self.state, "BAT0", 1.0)
+        seed(self.state, "BAT1", 1.0)
         policy.switch_profile(self.cfg, self.state, "field", now=0.0, reason="test")
 
     def test_switch_records(self):

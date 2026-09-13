@@ -22,7 +22,6 @@ from dbb.sysfs import BATS
 
 STATE_DIR = Path(os.environ.get("DBB_STATE_DIR", "/var/lib/dell-battery-balance"))
 STATE_FILE = STATE_DIR / "state.json"
-SAMPLE_LOG = STATE_DIR / "samples.csv"
 
 CSV_FIELDS = [
     "ts", "boot_id", "ac_online", "bat", "status", "capacity",
@@ -37,7 +36,9 @@ def now_iso():
 
 def new_state():
     return {
-        "version": 1, "created": now_iso(), "slots": {}, "last": None,
+        "version": 2, "created": now_iso(),
+        "packs": {}, "tenures": [], "slots": {b: None for b in BATS}, "pending": {},
+        "next_tenure_id": 1, "last": None,
         "discharge_first": {b: 0 for b in BATS}, "sessions": 0, "policy": None,
         "ac_run_start_ts": None, "profile_switched_ts": None,
         "one_off_revert_hours": None, "firmware": {}, "events": [],
@@ -64,6 +65,9 @@ def load_state():
                      f"       Fix the install with: sudo chmod 644 {STATE_FILE}")
         except (OSError, json.JSONDecodeError) as e:
             sys.exit(f"error: cannot read {STATE_FILE}: {e}")
+        if state.get("version", 1) < 2:
+            from dbb import registry   # local import: registry imports state
+            state = registry.migrate_v1(state)
         base = new_state()
         for k, v in base.items():
             state.setdefault(k, v)
@@ -90,10 +94,16 @@ def _make_readable(path, mode):
         pass
 
 
+def sample_log_path(ts):
+    year = datetime.fromtimestamp(ts, timezone.utc).year
+    return STATE_DIR / f"samples-{year}.csv"
+
+
 def append_log(s):
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    new = not SAMPLE_LOG.exists()
-    with SAMPLE_LOG.open("a", newline="") as fh:
+    log = sample_log_path(s["ts"])
+    new = not log.exists()
+    with log.open("a", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
         if new:
             w.writeheader()
@@ -111,4 +121,4 @@ def append_log(s):
                 "current_now_ua": v["current_now_ua"],
                 "temp_dc": v["temp_dc"],
             })
-    _make_readable(SAMPLE_LOG, 0o644)
+    _make_readable(log, 0o644)

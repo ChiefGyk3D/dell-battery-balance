@@ -12,10 +12,10 @@
 """Turn config + measured state into the bands each slot should hold."""
 from dataclasses import dataclass
 
+from dbb import registry
 from dbb.config import profile_type
 from dbb.state import add_event
 from dbb.sysfs import BATS, clamp_band
-from dbb.wear import efc
 
 
 @dataclass
@@ -29,7 +29,7 @@ class Resolution:
 
 
 def efc_by_slot(state):
-    return {b: efc(s) for b, s in state.get("slots", {}).items()}
+    return {b: e for b in BATS if (e := registry.efc_for_slot(state, b)) is not None}
 
 
 def decide_roles(efc_map, deadband):

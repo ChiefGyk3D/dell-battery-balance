@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from dbb import VERSION, apply as apply_mod, config as cfg_mod, policy, render
+from dbb import VERSION, apply as apply_mod, config as cfg_mod, policy, registry, render
 from dbb.state import add_event, append_log, load_state, now_iso, save_state
 from dbb.sysfs import BATS, sample_all
 from dbb.wear import integrate
@@ -307,7 +307,7 @@ def cmd_restore(args):
 def cmd_reset(args):
     state = load_state()
     if args.slot:
-        state.get("slots", {}).pop(args.slot, None)
+        registry.close_tenure(state, args.slot, time.time())
         state["last"] = None
         add_event(state, "reset", args.slot)
     elif args.all:
