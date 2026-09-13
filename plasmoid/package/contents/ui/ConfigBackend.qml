@@ -19,6 +19,10 @@ Item {
     property string privPrefix: "pkexec --user dell-battery-balance "
     property string applyVerb: "config apply --json"
     property bool busy: false
+    // What the in-flight command is: "get" | "status" | "apply" | "act".
+    // Routing on this, not on the command text, so a pack or profile name
+    // can never be mistaken for one of our own markers.
+    property string _kind: ""
 
     signal loaded(var cfg)
     signal statusLoaded(var info)
@@ -38,16 +42,18 @@ Item {
         }
     }
 
-    function run(cmd) {
+    function run(cmd, kind) {
+        if (busy) return;   // one command at a time; the pages disable their controls while busy
         busy = true;
+        _kind = kind;
         exec.connectSource(cmd);
     }
 
-    function load() { run(cli + " config get --json"); }
-    function loadStatus() { run(cli + " status --json"); }
+    function load() { run(cli + " config get --json", "get"); }
+    function loadStatus() { run(cli + " status --json", "status"); }
 
     function act(subcommand, configure) {
-        run(privPrefix + (configure ? configureExe : controlExe) + " " + subcommand);
+        run(privPrefix + (configure ? configureExe : controlExe) + " " + subcommand, "act");
     }
 
     // The service account cannot read $XDG_RUNTIME_DIR (mode 700), so the
@@ -60,23 +66,23 @@ Item {
         run("sh -c 'f=$(mktemp /tmp/dbb-config-XXXXXX.json) && printf %s " + b64
             + " | base64 -d > \"$f\" && chmod 644 \"$f\" && "
             + privPrefix + configureExe + " " + applyVerb + " \"$f\"; "
-            + "rc=$?; rm -f -- \"$f\"; exit $rc'");
+            + "rc=$?; rm -f -- \"$f\"; exit $rc'", "apply");
     }
 
     function handle(source, payload) {
+        const kind = _kind;
+        _kind = "";
         const stdout = (payload["stdout"] || "").trim();
         const stderr = (payload["stderr"] || "").trim();
         const code = payload["exit code"];
-        const isGet = source.indexOf(" config get --json") !== -1;
-        const isStatus = source.indexOf(" status --json") !== -1;
-        if (isGet || isStatus) {
+        if (kind === "get" || kind === "status") {
             if (code !== 0) {
                 failed(stderr !== "" ? stderr : i18n("could not read the tool's output"));
                 return;
             }
             try {
                 const parsed = JSON.parse(stdout);
-                if (isStatus) statusLoaded(parsed); else loaded(parsed);
+                if (kind === "status") statusLoaded(parsed); else loaded(parsed);
             } catch (e) {
                 failed(i18n("could not parse the tool's output"));
             }
@@ -89,6 +95,6 @@ Item {
             failed(stderr !== "" ? stderr : i18n("action failed (exit %1)", code));
             return;
         }
-        if (source.indexOf("dbb-config-") !== -1) applied(); else actionDone(source);
+        if (kind === "apply") applied(); else actionDone(source);
     }
 }
