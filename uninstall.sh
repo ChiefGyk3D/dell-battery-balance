@@ -5,9 +5,18 @@ set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "run as root: sudo ./uninstall.sh" >&2; exit 1; }
 SVC=dell-battery-balance
 purge=0
-[[ "${1:-}" == "--purge" ]] && purge=1
+case "${1:-}" in
+    "") ;;
+    --purge) purge=1 ;;
+    *) echo "usage: ./uninstall.sh [--purge]" >&2; exit 2 ;;
+esac
 
 systemctl disable --now "$SVC.timer" 2>/dev/null || true
+
+if [[ -n "${SUDO_USER:-}" ]] && command -v kpackagetool6 >/dev/null; then
+    sudo -u "$SUDO_USER" kpackagetool6 --type Plasma/Applet \
+        --remove com.chiefgyk3d.dellbatterybalance 2>/dev/null || true
+fi
 
 rm -f /etc/systemd/system/$SVC.service /etc/systemd/system/$SVC.timer
 rm -f /etc/udev/rules.d/90-$SVC.rules

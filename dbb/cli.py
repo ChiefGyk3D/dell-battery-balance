@@ -340,7 +340,7 @@ def build_parser():
     cf = sub.add_parser("config", help="general settings").add_subparsers(dest="ccmd", required=True)
     sp = cf.add_parser("get"); sp.add_argument("key", nargs="?"); sp.set_defaults(func=cmd_config_get, cls="control")
     sp = cf.add_parser("set"); sp.add_argument("assignments", nargs="+", metavar="key=value"); sp.set_defaults(func=cmd_config_set, cls="config")
-    sp = cf.add_parser("validate"); sp.add_argument("path"); sp.set_defaults(func=cmd_config_validate, cls="control")
+    sp = cf.add_parser("validate"); sp.add_argument("path"); sp.set_defaults(func=cmd_config_validate, cls="config")
     sp = cf.add_parser("apply"); sp.add_argument("path"); sp.set_defaults(func=cmd_config_apply, cls="config")
 
     sub.add_parser("field", help="alias: profile set field").set_defaults(func=cmd_field, cls="control")
@@ -352,6 +352,23 @@ def build_parser():
 
 
 def main(argv=None):
+    raw = sys.argv[1:] if argv is None else list(argv)
+    # argparse silently takes the LAST occurrence of a repeated option, so a
+    # caller who can append arguments after the wrapper's fixed prefix (e.g.
+    # `dbb-control --polkit-class configure ...`) could otherwise override
+    # the class the wrapper set. Refuse outright rather than let the last
+    # one win. Stop scanning at a bare "--": that separator is how the
+    # wrappers themselves pin the class before user-controlled args begin,
+    # and argparse treats anything after it as positional.
+    count = 0
+    for tok in raw:
+        if tok == "--":
+            break
+        if tok == "--polkit-class" or tok.startswith("--polkit-class="):
+            count += 1
+    if count > 1:
+        print("error: --polkit-class may be given once", file=sys.stderr)
+        sys.exit(3)
     args = build_parser().parse_args(argv)
     if args.polkit_class == "control" and args.cls in CONFIGURE_CLASS:
         print("error: this command needs the configure action (dbb-configure), not control",

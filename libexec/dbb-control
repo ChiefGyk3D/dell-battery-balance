@@ -1,2 +1,3 @@
 #!/bin/sh
-exec /usr/local/bin/dell-battery-balance --polkit-class control "$@"
+unset DBB_SYSFS_ROOT DBB_CONFIG_DIR DBB_STATE_DIR DBB_BOOT_ID
+exec /usr/local/bin/dell-battery-balance --polkit-class control -- "$@"

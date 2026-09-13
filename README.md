@@ -115,8 +115,9 @@ pkexec --user dell-battery-balance /usr/local/libexec/dbb-configure config set g
 pkexec --user dell-battery-balance /usr/local/libexec/dbb-configure profile create trip --from travel
 ```
 
-`dbb-control` refuses configure-class subcommands (`config`, `profile
-create/edit/delete`, `reset`) with exit 3 — see Privilege model below.
+`dbb-control` refuses configure-class subcommands — `config set/apply/validate`,
+`profile create/edit/delete`, `reset` — with exit 3; `config get` and
+everything else above stay control-class. See Privilege model below.
 
 If a BIOS admin password is set, point `general.bios_password_file` at a
 file readable only by the service account; the tool never takes it as an
@@ -144,8 +145,8 @@ Two polkit actions gate the two wrappers used above:
 
 | Action | Wrapper | Used for | Default prompt |
 |---|---|---|---|
-| `com.chiefgyk3d.dellbatterybalance.control` | `dbb-control` | `profile set`, `field`, `restore`, `balance --apply` | the user's own password, kept (`auth_self_keep`) |
-| `com.chiefgyk3d.dellbatterybalance.configure` | `dbb-configure` | `config set/apply`, `profile create/edit/delete`, `reset` | admin password, kept (`auth_admin_keep`) |
+| `com.chiefgyk3d.dellbatterybalance.control` | `dbb-control` | `config get`, `profile set`, `field`, `restore`, `balance --apply` | the user's own password, kept (`auth_self_keep`) |
+| `com.chiefgyk3d.dellbatterybalance.configure` | `dbb-configure` | `config set/apply/validate`, `profile create/edit/delete`, `reset` | admin password, kept (`auth_admin_keep`) |
 
 `control` deliberately still prompts: a profile switch can park both packs
 at 100% for days, the exact harm this tool exists to prevent. To loosen it
@@ -153,7 +154,28 @@ to no prompt at all, add a rule to `/etc/polkit-1/rules.d/` that resolves
 `com.chiefgyk3d.dellbatterybalance.control` to `polkit.Result.YES`. That
 cannot be used to sneak a configuration write past the `configure` action —
 the tool itself rejects a configure-class subcommand under
-`--polkit-class control` with exit 3, regardless of what polkit allowed.
+`--polkit-class control` with exit 3, regardless of what polkit allowed, and
+refuses outright (exit 3, before even parsing the command) if
+`--polkit-class` appears more than once — the wrappers pin it once and pass
+`--` before the rest of `"$@"`, so argparse's "last occurrence wins" behavior
+can never be used to swap `control` for `configure` after the fact.
+
+### Verify
+
+```sh
+sudo ./install.sh
+id dell-battery-balance
+stat -c '%A %U:%G %n' /sys/class/firmware-attributes/dell-wmi-sysman/attributes/SliceBattCustomChargeStop/current_value
+systemctl status dell-battery-balance.timer
+sudo -u dell-battery-balance dell-battery-balance status
+pkexec --user dell-battery-balance /usr/local/libexec/dbb-control profile set travel
+pkexec --user dell-battery-balance /usr/local/libexec/dbb-control config set general.deadband_efc=0.4
+    # must fail, exit 3 -- config set is configure-class
+pkexec --user dell-battery-balance /usr/local/libexec/dbb-control --polkit-class configure config set general.deadband_efc=0.4
+    # must fail (exit 2 or 3) and leave the value unchanged -- the second
+    # --polkit-class cannot override the class the wrapper already set
+sudo journalctl -u dell-battery-balance.service -n 5
+```
 
 ## Plasma applet
 
@@ -163,15 +185,21 @@ active policy, and buttons for Balance / Field / Restore. Privileged actions
 go through `pkexec` against the two polkit actions above, so no terminal and
 no passwordless sudo is needed.
 
-`install.sh` installs both. To do the applet by hand:
+The applet on its own is not enough: `pkexec` selecting the right polkit
+action depends on the wrappers, the two `.policy` files, the grant script and
+the scoped account all being in place together, so there is no supported
+"just the applet, by hand" path — run:
 
 ```sh
-kpackagetool6 --type Plasma/Applet --install plasmoid/package    # or --upgrade
-sudo install -Dm755 libexec/dbb-control libexec/dbb-configure /usr/local/libexec/
-sudo install -Dm644 polkit/com.chiefgyk3d.dellbatterybalance.control.policy \
-    /usr/share/polkit-1/actions/com.chiefgyk3d.dellbatterybalance.control.policy
-sudo install -Dm644 polkit/com.chiefgyk3d.dellbatterybalance.configure.policy \
-    /usr/share/polkit-1/actions/com.chiefgyk3d.dellbatterybalance.configure.policy
+sudo ./install.sh
+```
+
+It installs the service account, grant script, udev rule, both polkit
+actions, and the applet, in one pass. After editing the applet's own files
+(`plasmoid/package/`), re-push just that piece:
+
+```sh
+kpackagetool6 --type Plasma/Applet --upgrade plasmoid/package
 ```
 
 Then: right-click the panel or system tray, Add Widgets, search for
@@ -199,15 +227,14 @@ write it.
 
 ## Roadmap
 
-The next version adds usage profiles (daily / field / travel / storage /
-custom), a system-wide `config.toml`, a pack registry that tracks wear per
-physical pack across swaps and rotations, safe auto-revert out of field mode,
-a full Plasma config dialog, and a scoped service account so that nothing
-which parses input or writes firmware values runs as root. The design is written up in
-[docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md](docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md),
-including the measured hardware constraint that drives it: these packs expose
-no per-unit identity, so swaps are detected and confirmed rather than
-recognised.
+Usage profiles (daily / field / travel / storage / custom), the system-wide
+`config.toml`, safe auto-revert out of field mode, and the scoped service
+account are all implemented, per
+[docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md](docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md).
+What remains: a pack registry that tracks wear per physical pack across
+swaps and rotations — needed because these packs expose no per-unit
+identity, so swaps must be detected and confirmed rather than recognised —
+and, on the applet side, a full Plasma config dialog and notifications.
 
 ## Known limits
 

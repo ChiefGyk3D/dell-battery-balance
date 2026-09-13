@@ -227,6 +227,10 @@ def save(cfg, path=CONFIG_FILE):
     if path.exists():
         bak = path.with_name(path.name + ".bak")
         bak.write_bytes(path.read_bytes())
+        try:
+            os.chmod(bak, 0o664)
+        except OSError:
+            pass
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(emit(cfg))
     os.replace(tmp, path)

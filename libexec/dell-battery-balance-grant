@@ -18,9 +18,12 @@ done
 grant "$PS/BAT0/charge_control_start_threshold" 0664
 grant "$PS/BAT0/charge_control_end_threshold" 0664
 
-# Only when a BIOS admin password is configured for the tool.
+# Only when a BIOS admin password is configured for the tool. Bounded read
+# (root parses no more than 64 KiB of a file a lower-privileged process can
+# grow), and single- or double-quoted TOML strings are both accepted.
 if [ -s /etc/dell-battery-balance/config.toml ] \
-   && grep -Eq '^bios_password_file *= *"[^"]+"' /etc/dell-battery-balance/config.toml; then
+   && head -c 65536 /etc/dell-battery-balance/config.toml \
+      | grep -Eq "^bios_password_file *= *['\"][^'\"]+['\"]"; then
     grant /sys/class/firmware-attributes/dell-wmi-sysman/authentication/Admin/current_password 0620
 fi
 exit 0

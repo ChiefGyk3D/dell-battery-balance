@@ -213,6 +213,45 @@ class PolkitClass(CliBase):
         code, _, err = self.run_cli("--polkit-class", "control", "profile", "set", "travel")
         self.assertEqual(code, 0, err)
 
+    def test_repeated_polkit_class_rejected(self):
+        # argparse takes the LAST occurrence of a repeated option; a caller
+        # who could inject a second --polkit-class would otherwise override
+        # the class the wrapper set. Must be refused outright, deadband left
+        # untouched.
+        code, _, err = self.run_cli(
+            "--polkit-class", "control", "--polkit-class", "configure",
+            "config", "set", "general.deadband_efc=0.4")
+        self.assertEqual(code, 3)
+        self.assertIn("--polkit-class", err)
+        code, out, _ = self.run_cli("config", "get", "general.deadband_efc")
+        self.assertEqual(out.strip(), "0.5")
+
+    def test_polkit_class_after_dashdash_is_positional_not_repeated_flag(self):
+        # The wrappers pin the class before "--", so anything after it
+        # (including a second "--polkit-class" token) is positional and
+        # argparse itself rejects it as an invalid subcommand.
+        code, _, err = self.run_cli(
+            "--polkit-class", "control", "--",
+            "--polkit-class", "configure", "config", "set", "general.deadband_efc=0.4")
+        self.assertNotEqual(code, 0)
+        code, out, _ = self.run_cli("config", "get", "general.deadband_efc")
+        self.assertEqual(out.strip(), "0.5")
+
+    def test_dashdash_form_still_works_for_legitimate_commands(self):
+        code, _, err = self.run_cli("--polkit-class", "control", "--", "profile", "set", "travel")
+        self.assertEqual(code, 0, err)
+
+    def test_control_class_refuses_config_validate(self):
+        # config validate touches files only the service account can read
+        # (e.g. a path under /etc/dell-battery-balance); letting the cheaper
+        # control action probe existence/shape defeats the split.
+        p = os.path.join(self.tmp.name, "candidate.toml")
+        with open(p, "w") as fh:
+            fh.write(self.config.emit(self.config.default_config()))
+        code, _, err = self.run_cli("--polkit-class", "control", "config", "validate", p)
+        self.assertEqual(code, 3)
+        self.assertIn("configure", err)
+
 
 class Duration(unittest.TestCase):
     def test_parse(self):
