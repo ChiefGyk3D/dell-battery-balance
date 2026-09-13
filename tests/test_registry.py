@@ -134,5 +134,128 @@ class MigrationV1(unittest.TestCase):
         self.assertIsNone(s["slots"]["BAT1"])
 
 
+class Detection(unittest.TestCase):
+    def setUp(self):
+        self.s = st.new_state()
+        registry.observe(self.s, "BAT1", bat(charge=2300000, capacity=50), sample(0), None)
+
+    def test_small_change_is_same_tenure(self):
+        t, changed = registry.observe(self.s, "BAT1", bat(charge=2200000, capacity=48), sample(120), 120.0)
+        self.assertFalse(changed); self.assertEqual(t["id"], 1)
+
+    def test_big_jump_opens_new_tenure_with_pending(self):
+        t, changed = registry.observe(self.s, "BAT1", bat(charge=4500000, capacity=98), sample(120), 120.0)
+        self.assertTrue(changed); self.assertEqual(t["id"], 2)
+        self.assertEqual(registry.tenure_by_id(self.s, 1)["end_ts"], 120.0)
+        p = self.s["pending"]["BAT1"]
+        self.assertEqual(p["tenure_id"], 2); self.assertEqual(p["reason"], "discontinuity")
+        self.assertEqual(p["guess"], "unsure"); self.assertIsNone(p["previous_pack"])
+        self.assertAlmostEqual(p["delta_pct"], (4500000 - 2300000) / DESIGN * 100, places=3)
+
+    def test_allowed_delta_scales_with_time(self):
+        self.assertAlmostEqual(registry.allowed_delta_uah(DESIGN, 60), DESIGN * 0.10)
+        self.assertAlmostEqual(registry.allowed_delta_uah(DESIGN, 1200), DESIGN * 1.0)
+        # a 4-hour suspend on the charger can legitimately move the whole pack
+        t, changed = registry.observe(self.s, "BAT1", bat(charge=4600000, capacity=100), sample(4 * 3600), 4 * 3600.0)
+        self.assertFalse(changed)
+
+    def test_charge_full_change_trips(self):
+        t, changed = registry.observe(self.s, "BAT1", bat(charge=2300000, full=4500000), sample(120), 120.0)
+        self.assertTrue(changed); self.assertEqual(self.s["pending"]["BAT1"]["reason"], "charge_full")
+
+    def test_reinsertion_guesses_same_when_close(self):
+        registry.assign(self.s, "BAT1", "B", new=True)
+        registry.note_absent(self.s, "BAT1", 100.0)
+        t, changed = registry.observe(self.s, "BAT1", bat(charge=2250000, capacity=49), sample(200), 100.0)
+        self.assertTrue(changed)
+        p = self.s["pending"]["BAT1"]
+        self.assertEqual(p["reason"], "insert"); self.assertEqual(p["guess"], "same")
+        self.assertEqual(p["previous_pack"], "B")
+
+    def test_reinsertion_after_external_charge_is_unsure_not_different(self):
+        registry.assign(self.s, "BAT1", "B", new=True)
+        registry.note_absent(self.s, "BAT1", 100.0)
+        registry.observe(self.s, "BAT1", bat(charge=4600000, capacity=100), sample(7200), 7100.0)
+        self.assertEqual(self.s["pending"]["BAT1"]["guess"], "unsure")
+
+    def test_removal_above_70_warns(self):
+        registry.assign(self.s, "BAT1", "B", new=True)
+        registry.observe(self.s, "BAT1", bat(charge=4500000, capacity=98), sample(120), 120.0)  # trips; fine
+        registry.assign(self.s, "BAT1", "B")   # confirm it is still B
+        registry.note_absent(self.s, "BAT1", 300.0)
+        kinds = [e["kind"] for e in self.s["events"]]
+        self.assertIn("warning", kinds)
+        self.assertEqual(self.s["packs"]["B"]["removed_at_soc"], 98)
+        self.assertEqual(self.s["packs"]["B"]["removed_ts"], 300.0)
+
+
+class Identification(unittest.TestCase):
+    def setUp(self):
+        self.s = st.new_state()
+        registry.observe(self.s, "BAT0", bat(), sample(0), None)
+        registry.observe(self.s, "BAT1", bat(), sample(0), None)
+
+    def test_assign_new_and_known(self):
+        t = registry.assign(self.s, "BAT0", "A", new=True)
+        self.assertEqual(t["pack"], "A"); self.assertIn("A", self.s["packs"])
+        self.assertNotIn("BAT0", self.s["pending"])
+        with self.assertRaises(registry.RegistryError):
+            registry.assign(self.s, "BAT1", "C")            # unknown, not new
+        with self.assertRaises(registry.RegistryError):
+            registry.assign(self.s, "BAT1", "A", new=True)  # exists
+
+    def test_conflict_same_pack_in_two_slots(self):
+        registry.assign(self.s, "BAT0", "A", new=True)
+        with self.assertRaises(registry.RegistryError) as cm:
+            registry.assign(self.s, "BAT1", "A")
+        self.assertIn("BAT0", str(cm.exception))
+
+    def test_bad_name(self):
+        with self.assertRaises(registry.RegistryError):
+            registry.assign(self.s, "BAT0", "no spaces here", new=True)
+
+    def test_same_uses_previous_pack(self):
+        registry.assign(self.s, "BAT1", "B", new=True)
+        registry.note_absent(self.s, "BAT1", 10.0)
+        registry.observe(self.s, "BAT1", bat(), sample(20), 10.0)
+        t = registry.same(self.s, "BAT1")
+        self.assertEqual(t["pack"], "B")
+        self.assertIsNone(self.s["packs"]["B"]["removed_ts"])
+        with self.assertRaises(registry.RegistryError):
+            registry.same(self.s, "BAT0")   # never had a previous pack
+
+    def test_reassign_moves_history(self):
+        registry.assign(self.s, "BAT0", "A", new=True)
+        registry.assign(self.s, "BAT1", "B", new=True)
+        registry.note_absent(self.s, "BAT1", 10.0)
+        t = registry.reassign(self.s, 2, "A")           # closed tenure 2 now belongs to A
+        self.assertEqual(t["pack"], "A")
+        # (tenure 1 is open in BAT0; B is free, so this should succeed:)
+        t1 = registry.reassign(self.s, 1, "B")
+        self.assertEqual(t1["pack"], "B")
+        registry.observe(self.s, "BAT1", bat(), sample(20), 10.0)
+        registry.assign(self.s, "BAT1", "Z", new=True)
+        with self.assertRaises(registry.RegistryError):
+            registry.reassign(self.s, 1, "Z")           # Z is open in BAT1, so tenure 1 (open in BAT0) cannot take it
+        with self.assertRaises(registry.RegistryError):
+            registry.reassign(self.s, 99, "A")
+
+    def test_retire_and_rename(self):
+        registry.assign(self.s, "BAT0", "A", new=True)
+        with self.assertRaises(registry.RegistryError):
+            registry.retire_pack(self.s, "A")           # in a slot
+        registry.note_absent(self.s, "BAT0", 5.0)
+        registry.retire_pack(self.s, "A")
+        self.assertTrue(self.s["packs"]["A"]["retired"])
+        registry.observe(self.s, "BAT0", bat(), sample(6), 1.0)
+        with self.assertRaises(registry.RegistryError):
+            registry.assign(self.s, "BAT0", "A")        # retired
+        registry.unretire_pack(self.s, "A")
+        registry.rename_pack(self.s, "A", "Alpha")
+        self.assertIn("Alpha", self.s["packs"]); self.assertNotIn("A", self.s["packs"])
+        self.assertEqual(registry.tenure_by_id(self.s, 1)["pack"], "Alpha")
+        self.assertEqual(registry.packs_in_slots(self.s), {})
+
+
 if __name__ == "__main__":
     unittest.main()
