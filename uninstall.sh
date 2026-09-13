@@ -22,6 +22,7 @@ rm -f /etc/systemd/system/$SVC.service /etc/systemd/system/$SVC.timer
 rm -f /etc/udev/rules.d/90-$SVC.rules
 rm -f /usr/share/polkit-1/actions/com.chiefgyk3d.dellbatterybalance.control.policy \
       /usr/share/polkit-1/actions/com.chiefgyk3d.dellbatterybalance.configure.policy
+rm -f /usr/share/knotifications6/dell_battery_balance.notifyrc
 rm -f /usr/local/libexec/dell-battery-balance-grant \
       /usr/local/libexec/dbb-control \
       /usr/local/libexec/dbb-configure

@@ -7,6 +7,7 @@ import QtQuick
 import org.kde.plasma.plasmoid
 import org.kde.plasma.core as PlasmaCore
 import org.kde.plasma.plasma5support as Plasma5Support
+import org.kde.notification as KNotification
 
 PlasmoidItem {
     id: root
@@ -51,6 +52,55 @@ PlasmoidItem {
     function fmtNum(v, dp, unit) {
         if (v === null || v === undefined) return i18n("no data yet");
         return i18n("%1%2", Number(v).toFixed(dp), unit);
+    }
+
+    // One Notification object per raised event; autoDelete frees it once
+    // shown. The component name matches /usr/share/knotifications6/
+    // dell_battery_balance.notifyrc, which install.sh places.
+    Component {
+        id: notifier
+        KNotification.Notification {
+            componentName: "dell_battery_balance"
+            iconName: "battery-profile-powersave"
+            autoDelete: true
+        }
+    }
+
+    // Map a state event to [notifyrc event id, title]; null when it is
+    // not one of the four conditions we notify for (spec §6.3).
+    function notifyEventFor(ev) {
+        const d = ev.detail || "";
+        if (ev.kind === "pack" && d.indexOf("occupancy change") !== -1)
+            return ["identityPending", i18n("Which pack is this?")];
+        if (ev.kind === "profile" && d.indexOf("(revert:") !== -1)
+            return ["revertFired", i18n("Profile reverted")];
+        if (ev.kind === "firmware")
+            return ["firmwareMismatch", i18n("Firmware disagrees with the requested ceiling")];
+        if (ev.kind === "warning")
+            return ["packRemovedHigh", i18n("Pack removed at high charge")];
+        return null;
+    }
+
+    // Root has no session bus, so the applet raises notifications from the
+    // events it sees in status. Once per event id: the high-water mark
+    // lives in KConfig, so a restart does not re-notify. -1 means this
+    // applet instance has never run; adopt the backlog silently.
+    function raiseNotifications() {
+        if (!info || !info.events) return;
+        const evs = info.events.filter(e => typeof e.id === "number");
+        if (evs.length === 0) return;
+        const seen = plasmoid.configuration.lastNotifiedEventId;
+        let high = seen;
+        for (const ev of evs) {
+            if (ev.id <= seen) continue;
+            if (ev.id > high) high = ev.id;
+            if (seen < 0 || !plasmoid.configuration.notify) continue;
+            const m = notifyEventFor(ev);
+            if (!m) continue;
+            const n = notifier.createObject(root, { eventId: m[0], title: m[1], text: ev.detail });
+            n.sendEvent();
+        }
+        if (high !== seen) plasmoid.configuration.lastNotifiedEventId = high;
     }
 
     Plasmoid.icon: fieldMode ? "battery-profile-performance"
@@ -117,6 +167,7 @@ PlasmoidItem {
             try {
                 info = JSON.parse(stdout);
                 lastError = "";
+                raiseNotifications();
             } catch (e) {
                 lastError = i18n("Could not parse status output");
             }

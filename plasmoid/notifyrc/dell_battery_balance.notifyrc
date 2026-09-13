@@ -1,0 +1,24 @@
+[Global]
+Name=Dell Battery Balance
+Comment=Wear tracking and charge ceilings for dual-battery Dell laptops
+IconName=battery-profile-powersave
+
+[Event/identityPending]
+Name=Pack identity question
+Comment=A pack was inserted or swapped and needs to be identified
+Action=Popup
+
+[Event/revertFired]
+Name=Profile reverted
+Comment=A temporary profile switched back automatically
+Action=Popup
+
+[Event/firmwareMismatch]
+Name=Firmware disagrees
+Comment=The charge ceiling read back from firmware does not match what was requested
+Action=Popup
+
+[Event/packRemovedHigh]
+Name=Pack removed at high charge
+Comment=A pack was removed above 70% and should be discharged before storage
+Action=Popup

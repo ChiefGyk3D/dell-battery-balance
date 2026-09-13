@@ -39,6 +39,7 @@ install -d -m2775 -o root -g "$SVC" /etc/$SVC
 
 install -Dm644 "$src/polkit/com.chiefgyk3d.dellbatterybalance.control.policy"   /usr/share/polkit-1/actions/com.chiefgyk3d.dellbatterybalance.control.policy
 install -Dm644 "$src/polkit/com.chiefgyk3d.dellbatterybalance.configure.policy" /usr/share/polkit-1/actions/com.chiefgyk3d.dellbatterybalance.configure.policy
+install -Dm644 "$src/plasmoid/notifyrc/dell_battery_balance.notifyrc" /usr/share/knotifications6/dell_battery_balance.notifyrc
 install -Dm644 "$src/udev/90-dell-battery-balance.rules" /etc/udev/rules.d/90-dell-battery-balance.rules
 install -Dm644 "$src/systemd/dell-battery-balance.service" /etc/systemd/system/dell-battery-balance.service
 install -Dm644 "$src/systemd/dell-battery-balance.timer"   /etc/systemd/system/dell-battery-balance.timer
