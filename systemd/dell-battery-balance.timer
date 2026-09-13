@@ -1,10 +1,10 @@
 [Unit]
-Description=Re-evaluate Dell dual-battery charge ceilings daily
+Description=Run the dell-battery-balance tick every 2 minutes
 
 [Timer]
-OnCalendar=daily
-RandomizedDelaySec=30min
-Persistent=true
+OnBootSec=1min
+OnUnitActiveSec=2min
+AccuracySec=15s
 
 [Install]
 WantedBy=timers.target

@@ -5,19 +5,16 @@
 <policyconfig>
   <vendor>dell-battery-balance</vendor>
   <vendor_url>https://github.com/ChiefGyk3D/dell-battery-balance</vendor_url>
-
-  <action id="com.chiefgyk3d.dellbatterybalance.control">
-    <description>Change Dell battery charge ceilings</description>
-    <message>Authentication is required to change the battery charge ceilings</message>
+  <action id="com.chiefgyk3d.dellbatterybalance.configure">
+    <description>Edit battery balancing configuration</description>
+    <message>Authentication is required to edit the battery balancing configuration</message>
     <icon_name>battery</icon_name>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
-      <!-- keep: authenticate once, then hold for the polkit default window,
-           so Field then Restore does not prompt twice in a row -->
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/dell-battery-balance</annotate>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/libexec/dbb-configure</annotate>
     <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
   </action>
 </policyconfig>

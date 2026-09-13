@@ -54,17 +54,22 @@ Either way, cycles move to the other pack. That is what makes the policy safe
 to run before the EC's exact behaviour is known — and the tool measures that
 behaviour anyway (`EC reaches for first` in the report).
 
-## Policy
+## Profiles
 
-| Role | Charge band | Applied to |
-|---|---|---|
-| `protect` | 50 / 60 | the pack that is **ahead** on wear |
-| `work` | 80 / 90 | the pack that is behind |
-| `neutral` | 50 / 80 | both, while they are within the deadband |
-| `field` | 90 / 100 | both, for maximum runtime |
+| Profile | Type | Bands | Notes |
+|---|---|---|---|
+| `daily` | balancing | neutral 50/80, protect 50/60, work 80/90 | Docked/desk default. Cannot be deleted. |
+| `field` | fixed | all 90/100 | Maximum runtime, wear protection off. Auto-reverts after 72h, or 12h once back on AC. |
+| `travel` | balancing | neutral 70/90, protect 60/80, work 80/95 | Reserve without the 100% float. |
+| `storage` | fixed | all 50/55 | Long idle, least wear. |
 
-Roles only flip once EFC divergence exceeds `--deadband` (default 0.50).
-Without that hysteresis the policy would oscillate on every run.
+A balancing profile flips a pack between `protect` and `work` once EFC
+divergence exceeds `general.deadband_efc` (default 0.5) — without that
+hysteresis the policy would oscillate on every tick. A fixed profile applies
+the same band to both packs regardless of wear. Profiles, bands, pins and
+revert rules all live in `/etc/dell-battery-balance/config.toml`; see
+[the design doc, §1](docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md#1-configuration)
+for the full schema.
 
 ## Install
 
@@ -72,43 +77,101 @@ Without that hysteresis the policy would oscillate on every run.
 sudo ./install.sh
 ```
 
-That installs the binary, creates `/var/lib/dell-battery-balance`, and starts
-sampling every 2 minutes. **The balancing timer is deliberately left off.**
-Gather data first — a week of real use — then review and enable:
+This creates the scoped `dell-battery-balance` system account, installs the
+package to `/usr/local/lib/dell-battery-balance`, the launcher, the two
+privilege wrappers and the grant script to `/usr/local/libexec`, the udev
+rule and both polkit actions, and the systemd unit + timer — then enables
+`dell-battery-balance.timer` immediately (tick every 2 minutes; ticks sample
+unconditionally and apply the resolved profile's bands whenever
+`general.auto_balance` is true, which is the default).
 
 ```sh
-dell-battery-balance report
-sudo systemctl enable --now dell-battery-balance.timer
+sudo ./uninstall.sh            # leaves /etc and /var/lib in place
+sudo ./uninstall.sh --purge    # also removes config and state
 ```
 
 ## Usage
 
+Read-only commands run as any user — state and config are group/world
+readable:
+
 ```sh
 dell-battery-balance status          # wear summary
 dell-battery-balance report          # + firmware config and recommendation
-sudo dell-battery-balance balance    # dry run, shows what it would set
-sudo dell-battery-balance balance --apply
-sudo dell-battery-balance field      # lift both ceilings before a field day
-sudo dell-battery-balance restore    # back to the balancing policy
+dell-battery-balance profile list
+dell-battery-balance profile show daily
 ```
 
-If a BIOS admin password is set, pass `--bios-password` or set
-`DBB_BIOS_PASSWORD` (an `EnvironmentFile` hook is stubbed in the unit).
+Commands that switch profiles, apply ceilings, or edit configuration run as
+the `dell-battery-balance` service account, through one of two polkit-gated
+wrappers:
+
+```sh
+pkexec --user dell-battery-balance /usr/local/libexec/dbb-control profile set travel
+pkexec --user dell-battery-balance /usr/local/libexec/dbb-control field
+pkexec --user dell-battery-balance /usr/local/libexec/dbb-control restore
+pkexec --user dell-battery-balance /usr/local/libexec/dbb-control balance --apply
+pkexec --user dell-battery-balance /usr/local/libexec/dbb-configure config set general.deadband_efc=0.4
+pkexec --user dell-battery-balance /usr/local/libexec/dbb-configure profile create trip --from travel
+```
+
+`dbb-control` refuses configure-class subcommands (`config`, `profile
+create/edit/delete`, `reset`) with exit 3 — see Privilege model below.
+
+If a BIOS admin password is set, point `general.bios_password_file` at a
+file readable only by the service account; the tool never takes it as an
+argument or environment variable.
+
+## Privilege model
+
+Root runs exactly one thing after install: a ~15-line grant script,
+`/usr/local/libexec/dell-battery-balance-grant`. Everything that parses
+config, evaluates policy, or writes a firmware value runs as a scoped system
+account, `dell-battery-balance` (`--system`, `nologin`, no other members —
+not even the interactive user).
+
+The grant script `chgrp`s and `chmod`s exactly eight sysfs files to the
+service group — the six `dell-wmi-sysman` charge-config attributes plus
+BAT0's two `charge_control_*` thresholds — and a ninth,
+`Admin/current_password`, only when `bios_password_file` is set. It touches
+nothing else and is idempotent. Sysfs permissions do not survive a reboot,
+so it runs twice over: via `ExecStartPre=+` on every tick (self-healing every
+2 minutes) and via `/etc/udev/rules.d/90-dell-battery-balance.rules` when the
+`dell-wmi-sysman` or `BAT0` device appears, so it's also correct for the
+first applet click after a fresh boot.
+
+Two polkit actions gate the two wrappers used above:
+
+| Action | Wrapper | Used for | Default prompt |
+|---|---|---|---|
+| `com.chiefgyk3d.dellbatterybalance.control` | `dbb-control` | `profile set`, `field`, `restore`, `balance --apply` | the user's own password, kept (`auth_self_keep`) |
+| `com.chiefgyk3d.dellbatterybalance.configure` | `dbb-configure` | `config set/apply`, `profile create/edit/delete`, `reset` | admin password, kept (`auth_admin_keep`) |
+
+`control` deliberately still prompts: a profile switch can park both packs
+at 100% for days, the exact harm this tool exists to prevent. To loosen it
+to no prompt at all, add a rule to `/etc/polkit-1/rules.d/` that resolves
+`com.chiefgyk3d.dellbatterybalance.control` to `polkit.Result.YES`. That
+cannot be used to sneak a configuration write past the `configure` action —
+the tool itself rejects a configure-class subcommand under
+`--polkit-class control` with exit 3, regardless of what polkit allowed.
 
 ## Plasma applet
 
 A Plasma 6 tray widget lives in `plasmoid/`. It sits next to the battery icon
 and shows each pack's EFC and calendar score, the measured EC drain order, the
 active policy, and buttons for Balance / Field / Restore. Privileged actions
-go through `pkexec` against the polkit action in `polkit/`, so no terminal and
+go through `pkexec` against the two polkit actions above, so no terminal and
 no passwordless sudo is needed.
 
 `install.sh` installs both. To do the applet by hand:
 
 ```sh
 kpackagetool6 --type Plasma/Applet --install plasmoid/package    # or --upgrade
-sudo install -Dm644 polkit/com.chiefgyk3d.dellbatterybalance.policy \
-    /usr/share/polkit-1/actions/com.chiefgyk3d.dellbatterybalance.policy
+sudo install -Dm755 libexec/dbb-control libexec/dbb-configure /usr/local/libexec/
+sudo install -Dm644 polkit/com.chiefgyk3d.dellbatterybalance.control.policy \
+    /usr/share/polkit-1/actions/com.chiefgyk3d.dellbatterybalance.control.policy
+sudo install -Dm644 polkit/com.chiefgyk3d.dellbatterybalance.configure.policy \
+    /usr/share/polkit-1/actions/com.chiefgyk3d.dellbatterybalance.configure.policy
 ```
 
 Then: right-click the panel or system tray, Add Widgets, search for
@@ -121,11 +184,18 @@ protection and is otherwise easy to leave on by accident.
 
 ## State
 
-Everything durable lives in `/var/lib/dell-battery-balance`:
+Durable data lives in `/var/lib/dell-battery-balance`, owned
+`dell-battery-balance:dell-battery-balance` (`0755`, files `0644` so the
+applet can read them without privilege):
 
 - `state.json` — cumulative counters, written atomically
 - `samples.csv` — raw sample log, so the wear model can be recomputed or
   re-derived later if the heuristics change
+
+Configuration lives in `/etc/dell-battery-balance/config.toml`, owned
+`root:dell-battery-balance` (directory `2775`, file `0664`) so `config
+set`/`config apply`, run as the service account through `dbb-configure`, can
+write it.
 
 ## Roadmap
 

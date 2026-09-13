@@ -1,0 +1,2 @@
+SUBSYSTEM=="firmware-attributes", KERNEL=="dell-wmi-sysman", ACTION=="add", RUN+="/usr/local/libexec/dell-battery-balance-grant"
+SUBSYSTEM=="power_supply", KERNEL=="BAT0", ACTION=="add", RUN+="/usr/local/libexec/dell-battery-balance-grant"

@@ -1,12 +1,27 @@
 [Unit]
-Description=Apply Dell dual-battery wear-balancing charge ceilings
-Documentation=file:/usr/local/share/doc/dell-battery-balance/README.md
-ConditionPathExists=/sys/class/power_supply/BAT1
+Description=Dell dual-battery wear tracking and charge-ceiling balancing (tick)
+Documentation=https://github.com/ChiefGyk3D/dell-battery-balance
+ConditionPathExists=/sys/class/power_supply/BAT0
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/dell-battery-balance balance --apply
-# Uncomment if a BIOS admin password is set:
-# Environment=DBB_BIOS_PASSWORD=...
-# ...or better, keep it out of the unit file:
-# EnvironmentFile=-/etc/default/dell-battery-balance
+User=dell-battery-balance
+Group=dell-battery-balance
+ExecStartPre=+/usr/local/libexec/dell-battery-balance-grant
+ExecStart=/usr/local/bin/dell-battery-balance tick
+Nice=10
+IOSchedulingClass=idle
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dell-battery-balance /etc/dell-battery-balance
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+# Deliberately NOT ProtectKernelTunables: it would remount /sys read-only.
