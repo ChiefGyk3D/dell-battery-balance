@@ -28,7 +28,9 @@ MouseArea {
     Layout.preferredWidth: Layout.minimumWidth
 
     hoverEnabled: true
-    onClicked: plasmoid.expanded = !plasmoid.expanded
+    // `expanded` lives on the PlasmoidItem root, not on the applet object
+    // that `plasmoid` names in Plasma 6; toggling the latter did nothing.
+    onClicked: root.expanded = !root.expanded
 
     RowLayout {
         anchors.fill: parent

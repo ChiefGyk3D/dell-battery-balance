@@ -370,8 +370,15 @@ kpackagetool6 --type Plasma/Applet --upgrade plasmoid/package
 ```
 
 Then: right-click the panel or system tray, Add Widgets, search for
-"Dell Battery Balance". Test it standalone with
-`plasmawindowed com.chiefgyk3d.dellbatterybalance`.
+"Dell Battery Balance". Left-click the icon for the popup; right-click →
+Configure for the dialog. Test it standalone with
+`plasmawindowed com.chiefgyk3d.dellbatterybalance` — but note that a
+windowed applet is always expanded and reads config from its own file, so
+it cannot show a broken click handler or a broken config default;
+`tests/test_applet_package.py` guards the two such mistakes found so far
+(no XML comments in `contents/config/main.xml`, expansion toggled on the
+root item), and plasmashell must be restarted after
+`kpackagetool6 --upgrade` for a panel instance to pick the new files up.
 
 Field mode is flagged in two places on purpose — a red dot on the tray icon
 and a warning banner in the popup — because it disables the calendar-wear

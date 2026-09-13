@@ -6,11 +6,9 @@
   <kcfgfile name=""/>
 
   <group name="General">
-    <!-- 0 = none, 1 = profile label, 2 = EFC divergence -->
     <entry name="trayText" type="Int">
       <default>0</default>
     </entry>
-    <!-- seconds between `status --json` polls -->
     <entry name="pollInterval" type="Int">
       <default>30</default>
     </entry>
@@ -20,7 +18,6 @@
     <entry name="notify" type="Bool">
       <default>true</default>
     </entry>
-    <!-- highest state event id already notified; -1 = adopt the backlog silently -->
     <entry name="lastNotifiedEventId" type="Int">
       <default>-1</default>
     </entry>

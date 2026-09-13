@@ -8,6 +8,14 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.kde.kcmutils as KCM
 
+// Keys (declared in ../config/main.xml, which must stay free of XML
+// comments: KConfigLoader silently drops the defaults of every entry that
+// follows one -- measured on Plasma 6.3):
+//   trayText            0 none, 1 profile label, 2 EFC divergence
+//   pollInterval        seconds between `status --json` polls
+//   expandDetails       per-pack details open by default
+//   notify              raise desktop notifications
+//   lastNotifiedEventId highest state event id already notified; -1 = adopt the backlog silently
 KCM.SimpleKCM {
     id: page
 
