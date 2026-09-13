@@ -75,5 +75,49 @@ class WearModelTests(unittest.TestCase):
         self.assertLess(sysfs.clamp_band(95, 55)[0], 55)
 
 
+class AcRunTracking(unittest.TestCase):
+    def mk(self, ts, ac, c0=4600000, c1=4600000):
+        one = lambda c: dict(status="Full", capacity=100, charge_now=c, charge_full_uah=4600000,
+                             charge_full_design_uah=4600000, voltage_now_uv=11400000,
+                             voltage_min_design_uv=11400000, current_now_ua=0, temp_dc=313,
+                             charge_now_uah=c)
+        return dict(ts=ts, boot_id="b", ac_online=ac, bats={"BAT0": one(c0), "BAT1": one(c1)})
+
+    def test_run_starts_on_transition_and_survives_ac_bounded_gap(self):
+        from dbb import wear, state as st
+        s = st.new_state()
+        wear.integrate(s, self.mk(0, 0))
+        wear.integrate(s, self.mk(120, 1))
+        self.assertEqual(s["ac_run_start_ts"], 120)
+        wear.integrate(s, self.mk(240, 1))
+        self.assertEqual(s["ac_run_start_ts"], 120)
+        wear.integrate(s, self.mk(240 + 8 * 3600, 1))   # suspended on the dock
+        self.assertEqual(s["ac_run_start_ts"], 120)
+
+    def test_run_resets_on_battery(self):
+        from dbb import wear, state as st
+        s = st.new_state()
+        wear.integrate(s, self.mk(0, 1))
+        wear.integrate(s, self.mk(120, 1))
+        wear.integrate(s, self.mk(240, 0))
+        self.assertIsNone(s["ac_run_start_ts"])
+
+    def test_first_sample_on_ac_starts_run(self):
+        from dbb import wear, state as st
+        s = st.new_state()
+        wear.integrate(s, self.mk(50, 1))
+        self.assertEqual(s["ac_run_start_ts"], 50)
+
+
+class Events(unittest.TestCase):
+    def test_bounded(self):
+        from dbb import state as st
+        s = st.new_state()
+        for i in range(600):
+            st.add_event(s, "test", str(i))
+        self.assertEqual(len(s["events"]), 500)
+        self.assertEqual(s["events"][-1]["detail"], "599")
+
+
 if __name__ == "__main__":
     unittest.main()

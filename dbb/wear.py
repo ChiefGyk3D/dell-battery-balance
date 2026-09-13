@@ -56,6 +56,17 @@ def blank_slot(design_uah):
     }
 
 
+def _track_ac_run(state, last, s):
+    ac = s["ac_online"]
+    if ac != 1:
+        state["ac_run_start_ts"] = None
+        return
+    if last is None or last["ac_online"] != 1 or state.get("ac_run_start_ts") is None:
+        # A gap with AC on both sides is still one run: the charger held SoC
+        # the whole time, so the pack was floating throughout.
+        state["ac_run_start_ts"] = s["ts"]
+
+
 def integrate(state, s):
     """Fold one sample into the cumulative counters."""
     last = state.get("last")
@@ -78,6 +89,7 @@ def integrate(state, s):
         slot["samples"] += 1
 
     if not last:
+        _track_ac_run(state, None, s)
         state["last"] = s
         return {"counted": False, "reason": "first sample"}
 
@@ -106,13 +118,16 @@ def integrate(state, s):
         # Calendar stress accrues whenever we are observing, charging or not.
         soc = v["capacity"]
         temp_dc = v["temp_dc"]
-        if soc is not None and temp_dc is not None and not gap:
+        if soc is not None and temp_dc is not None:
             hours = dt / 3600.0
-            slot["calendar_score"] += hours * calendar_stress(soc, temp_dc / 10.0)
+            if gap and not (last["ac_online"] == 1 and s["ac_online"] == 1):
+                continue
+            soc_eff = soc if not gap else (soc + (prev["capacity"] or soc)) / 2.0
+            slot["calendar_score"] += hours * calendar_stress(soc_eff, temp_dc / 10.0)
             slot["soc_hours"] += hours
-            slot["soc_hours_sum"] += hours * soc
+            slot["soc_hours_sum"] += hours * soc_eff
             slot["seconds_observed"] += dt
-            if soc >= 90:
+            if soc_eff >= 90:
                 slot["seconds_ge_90"] += dt
 
     # Which pack does the EC reach for first? Credited once per unplug, to the
@@ -139,5 +154,6 @@ def integrate(state, s):
                 state["discharge_first"].get(first_faller, 0) + 1
             state["session_credited"] = True
 
+    _track_ac_run(state, last, s)
     state["last"] = s
     return {"counted": True, "dt": dt, "gap": gap}

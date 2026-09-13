@@ -39,7 +39,15 @@ def new_state():
     return {
         "version": 1, "created": now_iso(), "slots": {}, "last": None,
         "discharge_first": {b: 0 for b in BATS}, "sessions": 0, "policy": None,
+        "ac_run_start_ts": None, "profile_switched_ts": None,
+        "one_off_revert_hours": None, "firmware": {}, "events": [],
+        "config_error": None, "config_snapshot": None,
     }
+
+
+def add_event(state, kind, detail):
+    state.setdefault("events", []).append({"ts": now_iso(), "kind": kind, "detail": detail})
+    del state["events"][:-500]
 
 
 def load_state():
@@ -50,12 +58,16 @@ def load_state():
                  f"       Fix the install with: sudo chmod 755 {STATE_DIR}")
     if exists:
         try:
-            return json.loads(STATE_FILE.read_text())
+            state = json.loads(STATE_FILE.read_text())
         except PermissionError:
             sys.exit(f"error: cannot read {STATE_FILE} as this user.\n"
                      f"       Fix the install with: sudo chmod 644 {STATE_FILE}")
         except (OSError, json.JSONDecodeError) as e:
             sys.exit(f"error: cannot read {STATE_FILE}: {e}")
+        base = new_state()
+        for k, v in base.items():
+            state.setdefault(k, v)
+        return state
     return new_state()
 
 
