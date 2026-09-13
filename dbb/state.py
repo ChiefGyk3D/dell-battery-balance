@@ -70,7 +70,7 @@ def load_state():
         exists = STATE_FILE.exists()
     except PermissionError:
         sys.exit(f"error: cannot read {STATE_DIR} as this user.\n"
-                 f"       Fix the install with: sudo chmod 755 {STATE_DIR}")
+                 f"       Fix the install with: sudo chmod 2775 {STATE_DIR}")
     if exists:
         try:
             state = json.loads(STATE_FILE.read_text())
