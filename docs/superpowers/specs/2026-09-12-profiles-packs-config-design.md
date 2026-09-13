@@ -259,14 +259,13 @@ consume the same dict so the applet can never see something the CLI cannot.
 
 ## 5. State file
 
-`/var/lib/dell-battery-balance/state.json`, version 2, 0644, atomic
+`/var/lib/dell-battery-balance/state.json`, version 2, `0664`, atomic
 replace. Contains: `packs`, `tenures`, `slots`, `last` sample, `boot_id`,
 `discharge_first`, `sessions`, `profile_switched_ts`, `one_off_revert`,
 `firmware` read-back per slot, `pending` questions, `events` (bounded to the
-last 500). `samples-YYYY.csv` next to it, one file per year. Since 0.3 the
-directory is setgid (`2775`) and `state.json`/`samples-YYYY.csv` are `0664`,
-group-writable by the service account, so a stray root run cannot lock it
-out.
+last 500). `samples-YYYY.csv` next to it, one file per year, `0664` likewise
+— the directory is setgid (`2775`) so a stray root run cannot lock the
+service account out.
 
 ## 6. Applet
 
@@ -413,12 +412,12 @@ RestrictRealtime=yes
 ```
 
 **Directories.** `/var/lib/dell-battery-balance` owned
-`dell-battery-balance:dell-battery-balance 0755`, files `0644` (applet reads).
+`dell-battery-balance:dell-battery-balance 2775` (setgid to the service
+group), files `0664` (applet reads) — group-writable so a stray root run
+cannot lock the service account out.
 `/etc/dell-battery-balance` owned `root:dell-battery-balance 2775`,
 `config.toml` and `config.toml.bak` `0664`, so `config apply` running as the
-scoped user can write them. Since 0.3 the state directory is also `2775`
-setgid and its files `0664`, matching `/etc`, so a stray root-owned write
-there is still group-writable by the service account.
+scoped user can write them.
 
 **Applet actions.** pkexec selects a polkit action by the executable's
 path, so there are two thin wrappers, `/usr/local/libexec/dbb-control` and
