@@ -49,13 +49,16 @@ def decide_roles(efc_map, deadband):
 
 
 def revert_due(profile, state, now):
-    # --for belongs to the SWITCH, not the profile (spec S4): a one-off
-    # override must fire even on a profile with no [profiles.X.revert]
-    # table at all (e.g. travel), so it is checked first and unconditionally.
     switched = state.get("profile_switched_ts")
     one_off = state.get("one_off_revert_hours")
-    if one_off and switched is not None and (now - switched) / 3600.0 >= one_off:
-        return "after_hours"
+    if one_off is not None:
+        # --for / --stay belong to the SWITCH, not the profile (spec §4): for
+        # this switch they REPLACE the profile's own triggers -- longer or
+        # shorter than after_hours -- and --stay (0) means no automatic
+        # revert at all. Issue #1 was this override acting as a floor.
+        if one_off > 0 and switched is not None and (now - switched) / 3600.0 >= one_off:
+            return "after_hours"
+        return None
     rv = profile.get("revert")
     if not rv:
         return None

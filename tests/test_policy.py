@@ -154,5 +154,30 @@ class Revert(unittest.TestCase):
         self.assertEqual(policy.resolve_revert_target(self.cfg, "travel"), "daily")
 
 
+class OneOffRevert(unittest.TestCase):
+    def setUp(self):
+        for m in list(sys.modules):
+            if m.startswith("dbb"):
+                del sys.modules[m]
+        from dbb import policy, config
+        self.policy = policy
+        self.field = config.default_config()["profiles"]["field"]   # after 72 h, on AC 12 h
+
+    def test_for_replaces_both_profile_triggers(self):
+        st = {"profile_switched_ts": 0.0, "one_off_revert_hours": 96.0, "ac_run_start_ts": 0.0}
+        self.assertIsNone(self.policy.revert_due(self.field, st, 80 * 3600))    # profile's 72 h / 12 h AC do NOT fire
+        self.assertEqual(self.policy.revert_due(self.field, st, 97 * 3600), "after_hours")
+
+    def test_stay_never_reverts(self):
+        st = {"profile_switched_ts": 0.0, "one_off_revert_hours": 0.0, "ac_run_start_ts": 0.0}
+        self.assertIsNone(self.policy.revert_due(self.field, st, 1000 * 3600))
+
+    def test_profile_triggers_apply_when_no_one_off(self):
+        st = {"profile_switched_ts": 0.0, "one_off_revert_hours": None, "ac_run_start_ts": None}
+        self.assertEqual(self.policy.revert_due(self.field, st, 73 * 3600), "after_hours")
+        st["ac_run_start_ts"] = 0.0
+        self.assertEqual(self.policy.revert_due(self.field, st, 13 * 3600), "on_ac_hours")
+
+
 if __name__ == "__main__":
     unittest.main()

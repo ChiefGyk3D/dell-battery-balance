@@ -38,17 +38,20 @@ def _power_w(v):
 def _revert_info(cfg, state, name, prof, now):
     rv = (prof or {}).get("revert") or {}
     one_off = state.get("one_off_revert_hours")
-    # A profile with no [revert] table (e.g. travel) still has revert info to
-    # report once a one-off --for override is armed on it.
-    if not rv and not one_off:
+    if one_off is None and not rv:
         return None
     switched = state.get("profile_switched_ts")
-    after = one_off or rv.get("after_hours")
     run = state.get("ac_run_start_ts")
+    if one_off is not None:
+        # a --for / --stay switch replaces the profile's triggers (policy.revert_due)
+        after, on_ac, stay = (one_off or None), None, one_off == 0
+    else:
+        after, on_ac, stay = rv.get("after_hours"), rv.get("on_ac_hours"), False
     return {
         "to": policy.resolve_revert_target(cfg, name),
+        "stay": stay,
         "after_hours_left": (after - (now - switched) / 3600.0) if (after and switched is not None) else None,
-        "on_ac_hours_left": (rv["on_ac_hours"] - (now - run) / 3600.0) if (rv.get("on_ac_hours") and run is not None) else None,
+        "on_ac_hours_left": (on_ac - (now - run) / 3600.0) if (on_ac and run is not None) else None,
     }
 
 
@@ -78,9 +81,12 @@ def fmt_status(state, s, cfg):
     bench_t = cfg["general"]["bench_temp_c"]
     rv = _revert_info(cfg, state, name, profile, now)
     if rv:
-        left = rv["after_hours_left"] if rv["after_hours_left"] is not None else rv["on_ac_hours_left"]
-        if left is not None:
-            lines.append(f"revert in {max(left, 0.0):.1f}h -> {rv['to']}")
+        if rv["stay"]:
+            lines.append(f"revert: none - stays on {name} until you change it")
+        else:
+            left = rv["after_hours_left"] if rv["after_hours_left"] is not None else rv["on_ac_hours_left"]
+            if left is not None:
+                lines.append(f"revert in {max(left, 0.0):.1f}h -> {rv['to']}")
     lines.append("")
 
     hdr = f"{'':6} {'now':>20} {'EFC':>7} {'discharged':>12} {'cal.score':>10} {'mean SoC':>9} {'>=90%':>8}"

@@ -76,7 +76,7 @@ def load_state():
             state = json.loads(STATE_FILE.read_text())
         except PermissionError:
             sys.exit(f"error: cannot read {STATE_FILE} as this user.\n"
-                     f"       Fix the install with: sudo chmod 644 {STATE_FILE}")
+                     f"       Fix the install with: sudo chmod 664 {STATE_FILE}")
         except (OSError, json.JSONDecodeError) as e:
             sys.exit(f"error: cannot read {STATE_FILE}: {e}")
         if state.get("version", 1) < 2:
@@ -95,10 +95,12 @@ def save_state(state):
     tmp = STATE_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, indent=2, sort_keys=True))
     os.replace(tmp, STATE_FILE)
-    # Only root writes, but any user must be able to read `status`/`report`.
-    # Battery telemetry carries nothing sensitive.
-    _make_readable(STATE_DIR, 0o755)
-    _make_readable(STATE_FILE, 0o644)
+    # The service account writes; root may too (a `sudo` run), and with the
+    # state directory setgid to the service group a root-created file stays
+    # group-writable, so one stray root run never locks the service account
+    # out. Any user may read.
+    _make_readable(STATE_DIR, 0o2775)
+    _make_readable(STATE_FILE, 0o664)
 
 
 def _make_readable(path, mode):
@@ -136,4 +138,4 @@ def append_log(s):
                 "current_now_ua": v["current_now_ua"],
                 "temp_dc": v["temp_dc"],
             })
-    _make_readable(log, 0o644)
+    _make_readable(log, 0o664)

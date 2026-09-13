@@ -24,6 +24,53 @@ from dbb.wear import efc, integrate
 
 CONFIGURE_CLASS = {"config", "profile-create", "profile-edit", "profile-delete", "reset", "pack-admin"}
 
+PROFILE_SUBCOMMANDS = ("list", "show", "set", "create", "edit", "delete")
+
+
+def expand_profile_shortcut(argv):
+    """`profile <name>` means `profile set <name>`: it is the first thing
+    people type, and argparse's "invalid choice" reply taught nobody the
+    real spelling. Only the command position is rewritten (after the
+    wrappers' `--polkit-class X --` prefix), never a later positional, so a
+    pack or profile literally named "profile" is untouched."""
+    out = list(argv)
+    i = 0
+    while i < len(out):
+        tok = out[i]
+        if tok == "--":
+            i += 1
+            break
+        if tok == "--polkit-class":
+            i += 2
+            continue
+        if tok.startswith("--polkit-class="):
+            i += 1
+            continue
+        break
+    if (i + 1 < len(out) and out[i] == "profile"
+            and out[i + 1] not in PROFILE_SUBCOMMANDS
+            and not out[i + 1].startswith("-")):
+        out.insert(i + 1, "set")
+    return out
+
+
+def _one_off_hours(args):
+    """--stay -> 0.0 (no automatic revert this switch); --for -> hours;
+    neither -> None (the profile's own [revert] table applies)."""
+    if getattr(args, "stay", False):
+        return 0.0
+    if getattr(args, "for_", None):
+        try:
+            return parse_duration(args.for_)
+        except ValueError as e:
+            die(f"error: {e}")
+    return None
+
+
+def _require_profile(cfg, name):
+    if name not in cfg["profiles"]:
+        die(f"error: no profile {name!r}. Profiles: {', '.join(sorted(cfg['profiles']))}")
+
 
 def die(msg, code=1):
     """sys.exit(str) only auto-prints via the default excepthook; our own
@@ -200,8 +247,7 @@ def cmd_profile_list(args):
 
 def cmd_profile_show(args):
     state, cfg, _ = _view()
-    if args.name not in cfg["profiles"]:
-        die(f"error: no profile {args.name!r}")
+    _require_profile(cfg, args.name)
     one = {"general": cfg["general"], "profiles": {args.name: cfg["profiles"][args.name]}}
     text = cfg_mod.emit(one)
     start = text.index(f"[profiles.{args.name}]")
@@ -212,15 +258,8 @@ def cmd_profile_show(args):
 
 def cmd_profile_set(args):
     state, cfg, _ = _view()
-    if args.name not in cfg["profiles"]:
-        die(f"error: no profile {args.name!r}")
-    hours = None
-    if args.for_:
-        try:
-            hours = parse_duration(args.for_)
-        except ValueError as e:
-            die(f"error: {e}")
-    sys.exit(_switch_and_apply(cfg, state, args.name, "cli", hours))
+    _require_profile(cfg, args.name)
+    sys.exit(_switch_and_apply(cfg, state, args.name, "cli", _one_off_hours(args)))
 
 
 def cmd_profile_create(args):
@@ -237,8 +276,7 @@ def cmd_profile_create(args):
 
 def cmd_profile_edit(args):
     state, cfg, _ = _view()
-    if args.name not in cfg["profiles"]:
-        die(f"error: no profile {args.name!r}")
+    _require_profile(cfg, args.name)
     for kv in args.assignments:
         if "=" not in kv:
             die(f"error: expected key=value, got {kv!r}")
@@ -257,8 +295,7 @@ def cmd_profile_delete(args):
         die("error: daily cannot be deleted")
     if args.name == cfg["general"]["active_profile"]:
         die("error: cannot delete the active profile")
-    if args.name not in cfg["profiles"]:
-        die(f"error: no profile {args.name!r}")
+    _require_profile(cfg, args.name)
     del cfg["profiles"][args.name]
     if cfg["general"]["previous_profile"] == args.name:
         cfg["general"]["previous_profile"] = "daily"
@@ -327,7 +364,7 @@ def cmd_config_apply(args):
 
 def cmd_field(args):
     state, cfg, _ = _view()
-    sys.exit(_switch_and_apply(cfg, state, "field", "cli"))
+    sys.exit(_switch_and_apply(cfg, state, "field", "cli", _one_off_hours(args)))
 
 
 def cmd_restore(args):
@@ -449,7 +486,11 @@ def build_parser():
     pr = sub.add_parser("profile", help="manage profiles").add_subparsers(dest="pcmd", required=True)
     pr.add_parser("list").set_defaults(func=cmd_profile_list, cls="control")
     sp = pr.add_parser("show"); sp.add_argument("name"); sp.set_defaults(func=cmd_profile_show, cls="control")
-    sp = pr.add_parser("set"); sp.add_argument("name"); sp.add_argument("--for", dest="for_", metavar="DURATION")
+    sp = pr.add_parser("set"); sp.add_argument("name")
+    g = sp.add_mutually_exclusive_group()
+    g.add_argument("--for", dest="for_", metavar="DURATION",
+                   help="revert after this long (90m, 8h, 3d), replacing the profile's own triggers for this switch")
+    g.add_argument("--stay", action="store_true", help="no automatic revert for this switch")
     sp.set_defaults(func=cmd_profile_set, cls="control")
     sp = pr.add_parser("create"); sp.add_argument("name"); sp.add_argument("--from", dest="from_", required=True)
     sp.set_defaults(func=cmd_profile_create, cls="profile-create")
@@ -483,7 +524,11 @@ def build_parser():
     sp = pk.add_parser("unretire"); sp.add_argument("name")
     sp.set_defaults(func=cmd_pack_unretire, cls="pack-admin")
 
-    sub.add_parser("field", help="alias: profile set field").set_defaults(func=cmd_field, cls="control")
+    sp = sub.add_parser("field", help="alias: profile set field")
+    g = sp.add_mutually_exclusive_group()
+    g.add_argument("--for", dest="for_", metavar="DURATION")
+    g.add_argument("--stay", action="store_true")
+    sp.set_defaults(func=cmd_field, cls="control")
     sub.add_parser("restore", help="alias: profile set <previous>").set_defaults(func=cmd_restore, cls="control")
     sp = sub.add_parser("reset", help="clear counters")
     g = sp.add_mutually_exclusive_group(required=True)
@@ -510,7 +555,7 @@ def main(argv=None):
     if count > 1:
         print("error: --polkit-class may be given once", file=sys.stderr)
         sys.exit(3)
-    args = build_parser().parse_args(argv)
+    args = build_parser().parse_args(expand_profile_shortcut(raw))
     if args.polkit_class == "control" and args.cls in CONFIGURE_CLASS:
         print("error: this command needs the configure action (dbb-configure), not control",
               file=sys.stderr)

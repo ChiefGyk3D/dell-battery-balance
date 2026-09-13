@@ -266,8 +266,13 @@ def save(cfg, path=CONFIG_FILE):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
+        # Rename the backup into place rather than opening it for writing: a
+        # .bak left root-owned by a stray `sudo` run would otherwise raise
+        # PermissionError for the service account on every later save.
         bak = path.with_name(path.name + ".bak")
-        bak.write_bytes(path.read_bytes())
+        bak_tmp = path.with_name(path.name + ".bak.tmp")
+        bak_tmp.write_bytes(path.read_bytes())
+        os.replace(bak_tmp, bak)
         try:
             os.chmod(bak, 0o664)
         except OSError:
@@ -343,8 +348,29 @@ def _coerce_to_type(raw, target_type, key):
     return s
 
 
+OFF_WORDS = ("none", "off", "false", "")
+
+
 def set_dotted(cfg, key, raw):
     parts = key.split(".")
+    # Removing auto-revert is a first-class edit, not a validation trap:
+    #   profiles.X.revert=none                      drops the whole table
+    #   profiles.X.revert.after_hours=none (or 0)   drops that trigger; when no
+    #   trigger is left the table goes too, since a revert with no trigger is
+    #   meaningless (validate() rejects it).
+    word = raw.strip().lower()
+    if len(parts) == 3 and parts[0] == "profiles" and parts[2] == "revert" and word in OFF_WORDS:
+        cfg.get("profiles", {}).get(parts[1], {}).pop("revert", None)
+        return
+    if (len(parts) == 4 and parts[0] == "profiles" and parts[2] == "revert"
+            and parts[3] in ("after_hours", "on_ac_hours") and word in OFF_WORDS + ("0", "0.0")):
+        prof = cfg.get("profiles", {}).get(parts[1], {})
+        rv = prof.get("revert")
+        if rv:
+            rv.pop(parts[3], None)
+            if not rv.get("after_hours") and not rv.get("on_ac_hours"):
+                del prof["revert"]
+        return
     node = cfg
     for p in parts[:-1]:
         node = node.setdefault(p, {})

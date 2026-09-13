@@ -31,8 +31,9 @@ install -Dm755 "$src/libexec/dbb-control"   /usr/local/libexec/dbb-control
 install -Dm755 "$src/libexec/dbb-configure" /usr/local/libexec/dbb-configure
 install -Dm644 "$src/README.md" /usr/local/share/doc/$SVC/README.md
 
-install -d -m755 -o "$SVC" -g "$SVC" /var/lib/$SVC
+install -d -m2775 -o "$SVC" -g "$SVC" /var/lib/$SVC
 chown -R "$SVC:$SVC" /var/lib/$SVC
+find /var/lib/$SVC -type f -exec chmod 664 {} +
 install -d -m2775 -o root -g "$SVC" /etc/$SVC
 [[ -e /etc/$SVC/config.toml ]] || install -m664 -o root -g "$SVC" "$src/config/config.toml.default" /etc/$SVC/config.toml
 

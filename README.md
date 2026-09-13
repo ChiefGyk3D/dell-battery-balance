@@ -59,7 +59,7 @@ behaviour anyway (`EC reaches for first` in the report).
 | Profile | Type | Bands | Notes |
 |---|---|---|---|
 | `daily` | balancing | neutral 50/80, protect 50/60, work 80/90 | Docked/desk default. Cannot be deleted. |
-| `field` | fixed | all 90/100 | Maximum runtime, wear protection off. Auto-reverts after 72h, or 12h once back on AC. |
+| `field` | fixed | all 90/100 | Maximum runtime, wear protection off. Auto-reverts after 72 h, or after 12 h back on AC — both adjustable or removable, see below. |
 | `travel` | balancing | neutral 70/90, protect 60/80, work 80/95 | Reserve without the 100% float. |
 | `storage` | fixed | all 50/55 | Long idle, least wear. |
 
@@ -70,6 +70,34 @@ the same band to both packs regardless of wear. Profiles, bands, pins and
 revert rules all live in `/etc/dell-battery-balance/config.toml`; see
 [the design doc, §1](docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md#1-configuration)
 for the full schema.
+
+### Field mode, auto-revert, and why
+
+Field holds both packs at 90–100%. That is exactly the state the rest of
+this tool exists to avoid — high state of charge is the dominant
+calendar-wear input, and a rugged laptop in a bag is usually warm too — so
+the failure mode of field mode is forgetting to leave it. The default
+revert is therefore on: 72 h covers a conference or a long weekend in the
+field, and 12 h of continuous AC means you are back at a desk. You are not
+locked into either:
+
+```sh
+dell-battery-balance profile field                    # same as: profile set field
+dell-battery-balance profile field --for 5d           # this switch reverts after 5 days, nothing else
+dell-battery-balance profile field --stay             # this switch never reverts; you change it yourself
+dell-battery-balance profile edit field revert.after_hours=120
+dell-battery-balance profile edit field revert.on_ac_hours=none
+dell-battery-balance profile edit field revert.to=daily
+dell-battery-balance profile edit field revert=none   # never revert, permanently
+dell-battery-balance profile edit travel revert.after_hours=24   # any profile can revert
+```
+
+`--for` and `--stay` belong to the switch: they replace the profile's own
+triggers for that switch and are forgotten on the next one. Editing
+`revert.*` changes the profile for good; `none`/`off`/`0` removes a
+trigger, and a table with no trigger left is removed with it. Every
+privileged form above goes through `dbb-control` (`--for`/`--stay`) or
+`dbb-configure` (`profile edit`), as in Usage.
 
 ## Packs and swapping
 
@@ -194,6 +222,12 @@ pkexec --user dell-battery-balance /usr/local/libexec/dbb-configure profile crea
 — with exit 3; `config get`, `pack list/assign/new/same`, and everything else
 above stay control-class. See Privilege model below.
 
+Plain `sudo dell-battery-balance …` also works — root can do everything —
+but leaves files it creates root-owned. Since 0.3 the state directory is
+setgid and files are group-writable, so a stray root run no longer locks
+the service account out; prefer `sudo -u dell-battery-balance
+dell-battery-balance …` or the wrappers all the same.
+
 If a BIOS admin password is set, point `general.bios_password_file` at a
 file readable only by the service account; the tool never takes it as an
 argument or environment variable. The grant script's gate for this is a
@@ -214,15 +248,16 @@ does not recognize even though it is valid, equivalent TOML.
 | `balance [--apply]` | resolve the active profile's bands; dry run unless `--apply` |
 | `profile list` | show all profiles, marking the active one |
 | `profile show <name>` | print one profile's TOML |
-| `profile set <name> [--for <duration>]` | switch profiles and apply immediately; `--for` (e.g. `8h`, `90m`, `3d`) arms a one-off revert regardless of whether the profile has its own `[revert]` table |
+| `profile <name>` | shortcut for `profile set <name>` |
+| `profile set <name> [--for <duration> \| --stay]` | switch profiles and apply immediately; `--for` reverts after that long and `--stay` never, either one replacing the profile's own triggers for this switch |
 | `profile create <name> --from <name>` | clone an existing profile |
-| `profile edit <name> key=value ...` | change one profile's fields |
+| `profile edit <name> key=value ...` | change one profile's fields; `revert=none` or `revert.after_hours=none` remove auto-revert |
 | `profile delete <name>` | remove a profile (not `daily`, not the active one) |
 | `config get [key]` | print the whole config or one dotted key |
 | `config set key=value ...` | change `general.*` or `profiles.*` fields |
 | `config validate <path>` | check a candidate file without writing anything |
 | `config apply <path>` | replace the whole config from a file (must be a complete, valid config) |
-| `field` | alias: `profile set field` |
+| `field [--for <duration> \| --stay]` | alias: `profile set field` |
 | `restore` | alias: `profile set <previous_profile>` |
 | `pack list` | list known packs (EFC, calendar score, slot/bench/retired) and any pending identity questions |
 | `pack assign <slot> <name>` | identify the pack in `<slot>` as an existing named pack |
@@ -341,8 +376,10 @@ protection and is otherwise easy to leave on by accident.
 ## State
 
 Durable data lives in `/var/lib/dell-battery-balance`, owned
-`dell-battery-balance:dell-battery-balance` (`0755`, files `0644` so the
-applet can read them without privilege):
+`dell-battery-balance:dell-battery-balance` (`2775`, files `0664`) so the
+applet can read them without privilege and a stray `sudo` run's root-owned
+files stay group-writable by the service account (the directory's setgid
+bit keeps new files in the service group):
 
 - `state.json` — cumulative counters: per-slot tenures, the named-pack
   registry, and everything else in the schema. Currently version 2.

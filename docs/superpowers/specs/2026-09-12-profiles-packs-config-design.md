@@ -98,6 +98,8 @@ Rules:
   named.
 - `revert` is optional. `revert.to` is `"previous"` or a profile name. Either
   trigger may be omitted; if both are, `revert` is rejected as meaningless.
+- `revert` may be removed with `revert=none` (CLI); a trigger set to
+  `none`/`0` is removed, and the table with it when no trigger remains.
 - A pin is `{ role = "protect"|"work"|"neutral" }` or
   `{ start = N, stop = M }`, never both.
 - Profile names: `[a-z0-9_-]{1,32}`. `daily` must exist; it is the fallback.
@@ -229,19 +231,24 @@ status [--json]                   # packs, tenures summary, profile, revert coun
 report                            # + events, per-tenure history, bench estimates
 balance [--apply]                 # one-shot resolve+apply (dry run by default)
 
-profile list | show <name> | set <name> [--for <duration>] |
+profile list | show <name> | set <name> [--for <duration> | --stay] |
         create <name> --from <name> | edit <name> key=value ... | delete <name>
 pack    list | assign <slot> <name> | new <slot> <name> | same <slot> |
         reassign <tenure-id> <name> | rename <old> <new> | retire <name> |
         unretire <name>
 config  get [key] | set key=value ... | apply <path> | validate <path>
-field                             # alias: profile set field
+field [--for <duration> | --stay]  # alias: profile set field
 restore                           # alias: profile set <previous_profile>
 reset [--slot | --pack | --all]
 ```
 
+`profile <name>` is accepted as `profile set <name>`.
+
 `profile set --for 8h` writes a one-off `revert.after_hours` override into
-state (not config) so a temporary switch does not edit the profile.
+state (not config) so a temporary switch does not edit the profile; `--stay`
+writes a one-off override of `0` so this switch never auto-reverts. Either
+one replaces the profile's own `[revert]` triggers for this switch only —
+not a floor on top of them — and is forgotten on the next switch.
 
 All output goes through one JSON model; the text renderer and `--json`
 consume the same dict so the applet can never see something the CLI cannot.

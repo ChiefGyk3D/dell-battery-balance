@@ -215,6 +215,86 @@ class Profiles(CliBase):
         self.assertNotEqual(code, 0)
         self.assertIn("key=value", err)
 
+    def test_profile_shortcut_is_profile_set(self):
+        code, _, err = self.run_cli("profile", "field")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.status()["profile"]["name"], "field")
+
+    def test_profile_shortcut_survives_the_wrapper_prefix(self):
+        code, _, err = self.run_cli("--polkit-class", "control", "--", "profile", "travel")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.status()["profile"]["name"], "travel")
+
+    def test_profile_shortcut_leaves_later_positionals_alone(self):
+        # a pack literally named "profile" must not be rewritten into "profile set"
+        code, _, err = self.run_cli("pack", "rename", "profile", "x")
+        self.assertNotEqual(code, 0)
+        self.assertNotIn("invalid choice", err)
+        self.assertNotIn("usage:", err)
+
+    def test_unknown_profile_lists_the_choices(self):
+        code, _, err = self.run_cli("profile", "nosuch")
+        self.assertNotEqual(code, 0)
+        self.assertIn("daily", err)
+        self.assertIn("field", err)
+        self.assertNotIn("invalid choice", err)
+
+    def test_for_longer_than_the_profile_after_hours_is_honoured(self):
+        # issue #1: --for is an override of the profile's triggers, not a floor
+        self.run_cli("profile", "set", "field", "--for", "96h")
+        j = self.status()
+        self.assertAlmostEqual(j["revert"]["after_hours_left"], 96.0, places=1)
+        self.assertIsNone(j["revert"]["on_ac_hours_left"])
+        self.assertFalse(j["revert"]["stay"])
+
+    def test_stay_disables_revert_for_this_switch(self):
+        code, _, err = self.run_cli("profile", "set", "field", "--stay")
+        self.assertEqual(code, 0, err)
+        j = self.status()
+        self.assertTrue(j["revert"]["stay"])
+        self.assertIsNone(j["revert"]["after_hours_left"])
+        self.assertIsNone(j["revert"]["on_ac_hours_left"])
+        code, out, _ = self.run_cli("status")
+        self.assertIn("stays on field", out)
+
+    def test_for_and_stay_are_exclusive(self):
+        code, _, err = self.run_cli("profile", "set", "field", "--for", "8h", "--stay")
+        self.assertNotEqual(code, 0)
+
+    def test_field_alias_takes_for_and_stay(self):
+        self.run_cli("field", "--stay")
+        self.assertTrue(self.status()["revert"]["stay"])
+        self.run_cli("restore")
+        self.run_cli("field", "--for", "3d")
+        self.assertAlmostEqual(self.status()["revert"]["after_hours_left"], 72.0, places=1)
+
+    def test_revert_none_removes_the_table(self):
+        code, _, err = self.run_cli("profile", "edit", "field", "revert=none")
+        self.assertEqual(code, 0, err)
+        code, out, _ = self.run_cli("profile", "show", "field")
+        self.assertNotIn("revert.", out)
+        self.run_cli("profile", "set", "field")
+        self.assertIsNone(self.status()["revert"])
+
+    def test_dropping_the_last_trigger_drops_the_table(self):
+        code, _, err = self.run_cli("profile", "edit", "field", "revert.on_ac_hours=none")
+        self.assertEqual(code, 0, err)
+        code, out, _ = self.run_cli("profile", "show", "field")
+        self.assertIn("revert.after_hours = 72", out)
+        self.assertNotIn("on_ac_hours", out)
+        code, _, err = self.run_cli("profile", "edit", "field", "revert.after_hours=0")
+        self.assertEqual(code, 0, err)
+        code, out, _ = self.run_cli("profile", "show", "field")
+        self.assertNotIn("revert.", out)
+
+    def test_trigger_can_be_added_to_a_profile_without_revert(self):
+        code, _, err = self.run_cli("profile", "edit", "travel", "revert.after_hours=24")
+        self.assertEqual(code, 0, err)
+        code, out, _ = self.run_cli("profile", "show", "travel")
+        self.assertIn("revert.after_hours = 24", out)
+        self.run_cli("profile", "set", "travel")
+        self.assertAlmostEqual(self.status()["revert"]["after_hours_left"], 24.0, places=1)
+
 
 class ConfigCmd(CliBase):
     def test_get_set_roundtrip(self):
@@ -319,6 +399,28 @@ class ConfigCmd(CliBase):
         code, _, err = self.run_cli("config", "apply", "--json", "/nonexistent/x.json")
         self.assertNotEqual(code, 0)
         self.assertIn("not found", err)
+
+    def test_backup_is_replaced_not_rewritten(self):
+        # A .bak left root-owned by a stray `sudo` run must not lock the
+        # service account out: the backup is renamed into place, never
+        # opened for writing.
+        self.run_cli("config", "set", "general.deadband_efc=0.3")
+        self.run_cli("config", "set", "general.deadband_efc=0.35")
+        bak = os.path.join(os.environ["DBB_CONFIG_DIR"], "config.toml.bak")
+        self.assertTrue(os.path.exists(bak))
+        os.chmod(bak, 0o444)
+        code, _, err = self.run_cli("config", "set", "general.deadband_efc=0.4")
+        self.assertEqual(code, 0, err)
+        with open(bak) as fh:
+            self.assertIn("deadband_efc = 0.35", fh.read())
+
+    def test_state_and_sample_log_are_group_writable(self):
+        self.run_cli("sample")
+        sd = os.environ["DBB_STATE_DIR"]
+        self.assertEqual(os.stat(os.path.join(sd, "state.json")).st_mode & 0o777, 0o664)
+        logs = [f for f in os.listdir(sd) if f.startswith("samples-")]
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(os.stat(os.path.join(sd, logs[0])).st_mode & 0o777, 0o664)
 
 
 class StatusDetail(CliBase):

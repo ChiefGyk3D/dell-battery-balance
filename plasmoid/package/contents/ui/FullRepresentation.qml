@@ -367,11 +367,14 @@ PlasmaExtras.Representation {
                         out.push(i18n("%1 h on AC", Math.max(0, r.on_ac_hours_left).toFixed(1)));
                     return out;
                 }
-                visible: parts.length > 0
+                visible: text !== ""
                 font: Kirigami.Theme.smallFont
-                text: parts.length > 0
-                    ? i18n("Reverts to %1 in %2", root.info.revert.to, parts.join(i18n(" or ")))
-                    : ""
+                text: {
+                    const r = root.info ? root.info.revert : null;
+                    if (!r) return "";
+                    if (r.stay) return i18n("No automatic revert - stays on %1 until you change it", root.info.profile.label);
+                    return parts.length > 0 ? i18n("Reverts to %1 in %2", r.to, parts.join(i18n(" or "))) : "";
+                }
             }
             Flow {
                 Layout.fillWidth: true
