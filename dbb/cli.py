@@ -21,7 +21,7 @@ from dbb.state import add_event, append_log, load_state, now_iso, save_state
 from dbb.sysfs import BATS, sample_all
 from dbb.wear import integrate
 
-CONFIGURE_CLASS = {"config", "profile-create", "profile-edit", "profile-delete", "reset"}
+CONFIGURE_CLASS = {"config", "profile-create", "profile-edit", "profile-delete", "reset", "pack-admin"}
 
 
 def die(msg, code=1):
@@ -304,17 +304,79 @@ def cmd_restore(args):
     sys.exit(_switch_and_apply(cfg, state, cfg["general"]["previous_profile"], "cli restore"))
 
 
+def _registry_op(fn, *a, **kw):
+    """Load state, apply a pure registry edit, save. Never samples/integrates:
+    these commands only change identity bookkeeping, not wear counters."""
+    state = load_state()
+    try:
+        fn(state, *a, **kw)
+    except registry.RegistryError as e:
+        die(f"error: {e}")
+    save_state(state)
+
+
+def cmd_pack_list(args):
+    state, cfg, _ = _view()
+    rows = registry.all_packs(state, time.time(), cfg["general"]["bench_temp_c"])
+    if not rows:
+        print("no packs registered yet; run 'pack new SLOT NAME' to name the inserted ones")
+    for r in rows:
+        where = r["in_slot"] or ("retired" if r["retired"] else "bench")
+        extra = f"  out {r['bench_hours']:.0f}h at {r['removed_at_soc']}%" if (where == "bench" and r["removed_at_soc"] is not None) else ""
+        print(f"{r['name']:8} EFC {r['efc']:6.2f}  cal {r['calendar_score']:7.1f}  {where:8}{extra}")
+    for slot, q in sorted(state.get("pending", {}).items()):
+        print(f"PENDING {slot}: guess={q['guess']} ({q['reason']}"
+              + (f", was {q['previous_pack']}" if q.get("previous_pack") else "") + ")")
+
+
+def cmd_pack_assign(args):
+    _registry_op(registry.assign, args.slot, args.name)
+
+
+def cmd_pack_new(args):
+    _registry_op(registry.assign, args.slot, args.name, new=True)
+
+
+def cmd_pack_same(args):
+    _registry_op(registry.same, args.slot)
+
+
+def cmd_pack_reassign(args):
+    _registry_op(registry.reassign, args.tenure_id, args.name)
+
+
+def cmd_pack_rename(args):
+    _registry_op(registry.rename_pack, args.old, args.new)
+
+
+def cmd_pack_retire(args):
+    _registry_op(registry.retire_pack, args.name)
+
+
+def cmd_pack_unretire(args):
+    _registry_op(registry.unretire_pack, args.name)
+
+
 def cmd_reset(args):
     state = load_state()
     if args.slot:
         registry.close_tenure(state, args.slot, time.time())
         state["last"] = None
         add_event(state, "reset", args.slot)
+    elif args.pack:
+        if args.pack not in state["packs"]:
+            die(f"error: unknown pack {args.pack}")
+        where = registry.packs_in_slots(state).get(args.pack)
+        if where:
+            die(f"error: pack {args.pack} is in {where}; remove it before resetting")
+        state["tenures"] = [t for t in state["tenures"] if t["pack"] != args.pack]
+        del state["packs"][args.pack]
+        add_event(state, "reset", f"pack {args.pack} and its tenures deleted")
     elif args.all:
         from dbb.state import new_state
         state = new_state()
     else:
-        die("error: give --slot SLOT or --all")
+        die("error: give --slot SLOT, --pack NAME or --all")
     save_state(state)
 
 
@@ -356,10 +418,27 @@ def build_parser():
     sp = cf.add_parser("validate"); sp.add_argument("path"); sp.set_defaults(func=cmd_config_validate, cls="config")
     sp = cf.add_parser("apply"); sp.add_argument("path"); sp.set_defaults(func=cmd_config_apply, cls="config")
 
+    pk = sub.add_parser("pack", help="physical pack registry").add_subparsers(dest="kcmd", required=True)
+    pk.add_parser("list").set_defaults(func=cmd_pack_list, cls="control")
+    sp = pk.add_parser("assign"); sp.add_argument("slot", choices=BATS); sp.add_argument("name")
+    sp.set_defaults(func=cmd_pack_assign, cls="control")
+    sp = pk.add_parser("new"); sp.add_argument("slot", choices=BATS); sp.add_argument("name")
+    sp.set_defaults(func=cmd_pack_new, cls="control")
+    sp = pk.add_parser("same"); sp.add_argument("slot", choices=BATS)
+    sp.set_defaults(func=cmd_pack_same, cls="control")
+    sp = pk.add_parser("reassign"); sp.add_argument("tenure_id", type=int); sp.add_argument("name")
+    sp.set_defaults(func=cmd_pack_reassign, cls="pack-admin")
+    sp = pk.add_parser("rename"); sp.add_argument("old"); sp.add_argument("new")
+    sp.set_defaults(func=cmd_pack_rename, cls="pack-admin")
+    sp = pk.add_parser("retire"); sp.add_argument("name")
+    sp.set_defaults(func=cmd_pack_retire, cls="pack-admin")
+    sp = pk.add_parser("unretire"); sp.add_argument("name")
+    sp.set_defaults(func=cmd_pack_unretire, cls="pack-admin")
+
     sub.add_parser("field", help="alias: profile set field").set_defaults(func=cmd_field, cls="control")
     sub.add_parser("restore", help="alias: profile set <previous>").set_defaults(func=cmd_restore, cls="control")
     sp = sub.add_parser("reset", help="clear counters")
-    sp.add_argument("--slot", choices=BATS); sp.add_argument("--all", action="store_true")
+    sp.add_argument("--slot", choices=BATS); sp.add_argument("--pack", metavar="NAME"); sp.add_argument("--all", action="store_true")
     sp.set_defaults(func=cmd_reset, cls="reset")
     return p
 

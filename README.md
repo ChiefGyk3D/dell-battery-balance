@@ -71,6 +71,46 @@ revert rules all live in `/etc/dell-battery-balance/config.toml`; see
 [the design doc, §1](docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md#1-configuration)
 for the full schema.
 
+## Packs and swapping
+
+Both packs report an identical serial, ePPID and manufacture date, so the
+tool cannot read which physical pack is in which slot — it has to ask.
+Wear is tracked per *tenure* (one continuous occupancy of a slot) and rolled
+up per named *pack* across every tenure it has ever held, so EFC and calendar
+score for pack "A" survive it moving between BAT0 and BAT1, or sitting on the
+bench.
+
+A tenure opens whenever a slot goes from empty to occupied, or its readings
+jump by more than the plausible-continuity threshold (a `charge_full` change,
+or a `charge_now` discontinuity too large for the elapsed time) — either one
+means "this might not be the same physical pack any more," and the tool asks
+rather than assumes. `status`/`report` show a `PENDING <slot>` line, and the
+applet surfaces the same question in its popup, with one of three answers:
+
+- `pack same <slot>` — confirm it is the pack that was previously in that
+  slot (offered only when the new reading is close enough to a guess of
+  `same`, i.e. within 3% of design capacity of where the previous occupant
+  left off, with `charge_full` unchanged).
+- `pack assign <slot> <name>` — identify it as an existing named pack (e.g.
+  after a deliberate swap with a pack you already track).
+- `pack new <slot> <name>` — register a pack seen for the first time.
+
+`pack list` prints every known pack's EFC, calendar score, and whether it is
+in a slot, on the bench, or retired, plus a bench-time warning when a pack
+has been sitting for a while (removed above ~70% SoC is flagged — that is
+poor storage practice for Li-ion). It also lists any pending questions.
+When one bench pack has drifted more than `general.deadband_efc` behind the
+most-worn inserted pack, `status`/`report`/`pack list` print a rotation hint
+naming which pack to swap in and which to pull.
+
+Getting an answer wrong is not permanent: `pack reassign <tenure-id> <name>`
+re-labels a specific tenure after the fact — the undo for a misidentified
+`pack same`/`assign`/`new` — and moves that tenure's history to the
+(possibly different) named pack. `pack rename`, `pack retire` and `pack
+unretire` manage the pack roster itself; `reset --pack <name>` deletes a
+pack and every tenure that ever carried it (refused while the pack is still
+in a slot — take it out first).
+
 ## Install
 
 ```sh
@@ -102,7 +142,7 @@ an existing install:
 - Creates the `dell-battery-balance` service account (skipped if it already
   exists from a previous run).
 - Re-owns `/var/lib/dell-battery-balance` to `dell-battery-balance:dell-battery-balance`.
-  `state.json` and `samples.csv` are preserved — only ownership and mode
+  `state.json` and the sample-log CSVs are preserved — only ownership and mode
   change, never the content.
 - Installs `/etc/dell-battery-balance/config.toml` from the shipped default
   only if no config file is already present; an existing config.toml,
@@ -137,8 +177,9 @@ pkexec --user dell-battery-balance /usr/local/libexec/dbb-configure profile crea
 ```
 
 `dbb-control` refuses configure-class subcommands — `config set/apply/validate`,
-`profile create/edit/delete`, `reset` — with exit 3; `config get` and
-everything else above stay control-class. See Privilege model below.
+`profile create/edit/delete`, `reset`, `pack reassign/rename/retire/unretire`
+— with exit 3; `config get`, `pack list/assign/new/same`, and everything else
+above stay control-class. See Privilege model below.
 
 If a BIOS admin password is set, point `general.bios_password_file` at a
 file readable only by the service account; the tool never takes it as an
@@ -170,7 +211,15 @@ does not recognize even though it is valid, equivalent TOML.
 | `config apply <path>` | replace the whole config from a file (must be a complete, valid config) |
 | `field` | alias: `profile set field` |
 | `restore` | alias: `profile set <previous_profile>` |
-| `reset --slot <SLOT> \| --all` | clear counters for one slot, or everything |
+| `pack list` | list known packs (EFC, calendar score, slot/bench/retired) and any pending identity questions |
+| `pack assign <slot> <name>` | identify the pack in `<slot>` as an existing named pack |
+| `pack new <slot> <name>` | register the pack in `<slot>` as a brand-new named pack |
+| `pack same <slot>` | confirm the pack in `<slot>` is the one that was previously there |
+| `pack reassign <tenure-id> <name>` | re-label one tenure's history to a (possibly different) pack — the undo for a wrong `assign`/`new`/`same` |
+| `pack rename <old> <new>` | rename a pack |
+| `pack retire <name>` | mark a pack retired (must not be in a slot) |
+| `pack unretire <name>` | un-retire a pack |
+| `reset --slot <SLOT> \| --pack <NAME> \| --all` | clear counters for one slot, delete a bench pack and its tenures, or reset everything |
 
 ## Privilege model
 
@@ -199,8 +248,8 @@ Two polkit actions gate the two wrappers used above:
 
 | Action | Wrapper | Used for | Default prompt |
 |---|---|---|---|
-| `com.chiefgyk3d.dellbatterybalance.control` | `dbb-control` | `config get`, `profile set`, `field`, `restore`, `balance --apply` | the user's own password, kept (`auth_self_keep`) |
-| `com.chiefgyk3d.dellbatterybalance.configure` | `dbb-configure` | `config set/apply/validate`, `profile create/edit/delete`, `reset` | admin password, kept (`auth_admin_keep`) |
+| `com.chiefgyk3d.dellbatterybalance.control` | `dbb-control` | `config get`, `profile set`, `field`, `restore`, `balance --apply`, `pack list/assign/new/same` | the user's own password, kept (`auth_self_keep`) |
+| `com.chiefgyk3d.dellbatterybalance.configure` | `dbb-configure` | `config set/apply/validate`, `profile create/edit/delete`, `reset`, `pack reassign/rename/retire/unretire` | admin password, kept (`auth_admin_keep`) |
 
 `control` deliberately still prompts: a profile switch can park both packs
 at 100% for days, the exact harm this tool exists to prevent. To loosen it
@@ -244,9 +293,12 @@ dell-battery-balance status
 
 A Plasma 6 tray widget lives in `plasmoid/`. It sits next to the battery icon
 and shows each pack's EFC and calendar score, the measured EC drain order, the
-active policy, and buttons for Balance / Field / Restore. Privileged actions
-go through `pkexec` against the two polkit actions above, so no terminal and
-no passwordless sudo is needed.
+active policy, and buttons for Balance / Field / Restore. Any pending pack
+identity questions (see Packs and swapping above) surface in the popup too,
+with buttons to answer them, since they show up in `status --json`'s
+`pending` field the same way they do on the CLI. Privileged actions go
+through `pkexec` against the two polkit actions above, so no terminal and no
+passwordless sudo is needed.
 
 The applet on its own is not enough: `pkexec` selecting the right polkit
 action depends on the wrappers, the two `.policy` files, the grant script and
@@ -279,9 +331,16 @@ Durable data lives in `/var/lib/dell-battery-balance`, owned
 `dell-battery-balance:dell-battery-balance` (`0755`, files `0644` so the
 applet can read them without privilege):
 
-- `state.json` — cumulative counters, written atomically
-- `samples.csv` — raw sample log, so the wear model can be recomputed or
-  re-derived later if the heuristics change
+- `state.json` — cumulative counters: per-slot tenures, the named-pack
+  registry, and everything else in the schema. Currently version 2.
+  A version-1 file (the pre-registry, per-slot-only layout from 0.2) is
+  migrated automatically the first time anything *writes* state (`sample`,
+  `tick`, ...); it is a one-way, in-place upgrade — the two slots become
+  packs "A" and "B" — and read-only commands like `status`/`report` load
+  and display the migrated data without rewriting the file until then.
+- `samples-YYYY.csv` — raw sample log, one file per calendar year (UTC), so
+  the wear model can be recomputed or re-derived later if the heuristics
+  change without ever-growing files.
 
 Configuration lives in `/etc/dell-battery-balance/config.toml`, owned
 `root:dell-battery-balance` (directory `2775`, file `0664`) so `config
@@ -295,20 +354,23 @@ unaffected; `dbb-configure` keeps working the same way afterward.
 ## Roadmap
 
 Usage profiles (daily / field / travel / storage / custom), the system-wide
-`config.toml`, safe auto-revert out of field mode, and the scoped service
-account are all implemented, per
+`config.toml`, safe auto-revert out of field mode, the scoped service
+account, and the pack registry that tracks wear per physical pack across
+swaps and rotations (with confirm-on-swap identity, since these packs expose
+no per-unit identity) are all implemented, per
 [docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md](docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md).
-What remains: a pack registry that tracks wear per physical pack across
-swaps and rotations — needed because these packs expose no per-unit
-identity, so swaps must be detected and confirmed rather than recognised —
-and, on the applet side, a full Plasma config dialog and notifications.
+What remains: on the applet side, a full Plasma config dialog and
+notifications.
 
 ## Known limits
 
-- **Pack swaps are not reliably detected.** Both packs report an identical
-  serial (`88`) and ePPID, so only a design-capacity change is visible. After
-  physically swapping a pack, run `reset --slot BAT0` (or `BAT1`) so its
-  counters do not carry over.
+- **Pack identity is confirmed, not read.** Both packs report an identical
+  serial (`88`) and ePPID, so a swap is detected heuristically (a
+  `charge_full` change or an implausible `charge_now` jump) and the tool
+  asks which physical pack it is seeing rather than assuming — see Packs
+  and swapping above. A swap that happens to look continuous (same design
+  capacity, charge picked back up close to where it left off) can still be
+  missed; `pack reassign` fixes a tenure that was mislabeled this way.
 - **Only BAT0 exposes `charge_control_*` to Linux sysfs.** BAT1 is reachable
   only via `dell-wmi-sysman`, so generic tools like TLP can never manage it.
   The script uses sysman for both and falls back to `power_supply` for BAT0.
@@ -326,16 +388,19 @@ and, on the applet side, a full Plasma config dialog and notifications.
 python3 -m unittest discover -s tests -v
 ```
 
-94 tests across five files (`test_wear_model.py`, `test_policy.py`,
-`test_config.py`, `test_apply.py`, `test_cli.py`), all against a fake `/sys`
-tree and temp state/config dirs (`DBB_SYSFS_ROOT`, `DBB_STATE_DIR`,
-`DBB_CONFIG_DIR`) — never real hardware or files. Coverage includes: three
-full sequential-discharge cycles, asserting the pack doing the draining
-accumulates more EFC, the idle pack accumulates more calendar score, the
-drain-order detector credits one event per unplug, the deadband holds
-near-equal packs neutral, and bands clamp to the firmware's limits; the
-policy engine's role/band/pin/revert resolution; config schema validation
-and `set_dotted` coercion; firmware apply/read-back and mismatch recording;
-and the full CLI surface, including profile switching, `--for` one-off
-reverts, config get/set/validate/apply strictness, and the polkit-class
-gate.
+133 tests across six files (`test_wear_model.py`, `test_policy.py`,
+`test_config.py`, `test_apply.py`, `test_registry.py`, `test_cli.py`), all
+against a fake `/sys` tree and temp state/config dirs (`DBB_SYSFS_ROOT`,
+`DBB_STATE_DIR`, `DBB_CONFIG_DIR`) — never real hardware or files. Coverage
+includes: three full sequential-discharge cycles, asserting the pack doing
+the draining accumulates more EFC, the idle pack accumulates more calendar
+score, the drain-order detector credits one event per unplug, the deadband
+holds near-equal packs neutral, and bands clamp to the firmware's limits;
+the policy engine's role/band/pin/revert resolution; config schema
+validation and `set_dotted` coercion; firmware apply/read-back and mismatch
+recording; the pack registry's tenure lifecycle, swap detection and
+identity guessing, totals/rotation-hint math, and version-1-to-2 state
+migration; and the full CLI surface, including profile switching, `--for`
+one-off reverts, config get/set/validate/apply strictness, the `pack ...`
+subcommands and `reset --pack`, the per-year sample-log rotation, and the
+polkit-class gate (control vs. pack-admin/configure).

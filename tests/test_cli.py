@@ -315,6 +315,87 @@ class PolkitClass(CliBase):
         self.assertIn("configure", err)
 
 
+class Packs(CliBase):
+    def test_fresh_state_has_two_pending_questions(self):
+        self.run_cli("sample")
+        j = self.status()
+        self.assertEqual(sorted(j["pending"]), ["BAT0", "BAT1"])
+        self.assertIsNone(j["bats"]["BAT0"]["pack"])
+
+    def test_new_assign_same_flow(self):
+        self.run_cli("sample")
+        code, _, err = self.run_cli("pack", "new", "BAT0", "A"); self.assertEqual(code, 0, err)
+        code, _, err = self.run_cli("pack", "new", "BAT1", "B"); self.assertEqual(code, 0, err)
+        j = self.status()
+        self.assertEqual(j["pending"], {})
+        self.assertEqual(j["bats"]["BAT0"]["pack"], "A")
+        # BAT1 leaves, comes back close to where it was -> guess same -> confirm
+        self.fs.bat("BAT1", present=0)
+        self.run_cli("sample")
+        self.fs.bat("BAT1", capacity=59, charge_now=2714000, status="Discharging")
+        self.run_cli("sample")
+        j = self.status()
+        self.assertEqual(j["pending"]["BAT1"]["guess"], "same")
+        self.assertEqual(j["pending"]["BAT1"]["previous_pack"], "B")
+        code, _, err = self.run_cli("pack", "same", "BAT1"); self.assertEqual(code, 0, err)
+        self.assertEqual(self.status()["bats"]["BAT1"]["pack"], "B")
+
+    def test_assign_conflict_reported(self):
+        self.run_cli("sample")
+        self.run_cli("pack", "new", "BAT0", "A")
+        code, _, err = self.run_cli("pack", "assign", "BAT1", "A")
+        self.assertNotEqual(code, 0); self.assertIn("BAT0", err)
+
+    def test_list_and_rotation(self):
+        self.run_cli("sample")
+        self.run_cli("pack", "new", "BAT0", "A"); self.run_cli("pack", "new", "BAT1", "B")
+        code, out, _ = self.run_cli("pack", "list")
+        self.assertEqual(code, 0); self.assertIn("A", out); self.assertIn("BAT0", out)
+
+    def test_admin_commands_need_configure_class(self):
+        self.run_cli("sample"); self.run_cli("pack", "new", "BAT0", "A")
+        for argv in (("pack", "rename", "A", "Alpha"), ("pack", "retire", "A"),
+                     ("pack", "reassign", "1", "A"), ("reset", "--pack", "A")):
+            code, _, err = self.run_cli("--polkit-class", "control", *argv)
+            self.assertEqual(code, 3, argv); self.assertIn("configure", err)
+        code, _, err = self.run_cli("--polkit-class", "control", "pack", "same", "BAT1")
+        self.assertNotEqual(code, 3)   # control-class; fails for a different reason (no previous pack)
+
+    def test_reset_pack_refuses_when_inserted_and_deletes_when_benched(self):
+        self.run_cli("sample"); self.run_cli("pack", "new", "BAT1", "B")
+        code, _, err = self.run_cli("reset", "--pack", "B"); self.assertNotEqual(code, 0); self.assertIn("BAT1", err)
+        self.fs.bat("BAT1", present=0); self.run_cli("sample")
+        code, _, err = self.run_cli("reset", "--pack", "B"); self.assertEqual(code, 0, err)
+        j = self.status()
+        self.assertNotIn("B", [p["name"] for p in j["packs"]])
+
+    def test_sample_log_is_per_year(self):
+        self.run_cli("sample")
+        import datetime, glob
+        year = datetime.datetime.now(datetime.timezone.utc).year
+        files = glob.glob(os.path.join(os.environ["DBB_STATE_DIR"], "samples-*.csv"))
+        self.assertEqual([os.path.basename(f) for f in files], [f"samples-{year}.csv"])
+
+    def test_v1_state_file_is_migrated_on_load(self):
+        import json as _json
+        from dbb import wear
+        d = os.environ["DBB_STATE_DIR"]; os.makedirs(d, exist_ok=True)
+        c0 = wear.blank_slot(4600000); c0["discharge_uah"] = 4600000 * 1.5
+        v1 = {"version": 1, "slots": {"BAT0": c0}, "last": None, "discharge_first": {"BAT0": 0, "BAT1": 2},
+              "sessions": 2, "policy": None}
+        with open(os.path.join(d, "state.json"), "w") as fh:
+            _json.dump(v1, fh)
+        j = self.status()
+        self.assertEqual(j["bats"]["BAT0"]["pack"], "A")
+        self.assertAlmostEqual(j["bats"]["BAT0"]["efc"], 1.5, places=3)
+        self.assertEqual(j["drain_first"], {"BAT0": 0, "BAT1": 2})
+        with open(os.path.join(d, "state.json")) as fh:
+            self.assertEqual(_json.load(fh)["version"], 1)   # status is read-only; not rewritten yet
+        self.run_cli("sample")
+        with open(os.path.join(d, "state.json")) as fh:
+            self.assertEqual(_json.load(fh)["version"], 2)
+
+
 class Duration(unittest.TestCase):
     def test_parse(self):
         from dbb.cli import parse_duration
