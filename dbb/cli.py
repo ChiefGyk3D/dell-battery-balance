@@ -24,6 +24,12 @@ from dbb.wear import efc, integrate
 
 CONFIGURE_CLASS = {"config", "profile-create", "profile-edit", "profile-delete", "reset", "pack-admin"}
 
+# Consecutive samples with no battery at all before the open tenures are
+# closed. One empty sample is as likely a transient sysfs read failure as a
+# real removal; closing on it would force two identity questions on the next
+# good tick.
+EMPTY_SAMPLES_TO_CLOSE = 2
+
 PROFILE_SUBCOMMANDS = ("list", "show", "set", "create", "edit", "delete")
 
 
@@ -142,19 +148,40 @@ def _switch_and_apply(cfg, state, name, reason, one_off_hours=None):
 
 # ----------------------------------------------------------------- commands
 
+def _note_empty_sample(state, sample):
+    """Both packs are out, or /sys hiccupped. The first empty sample only
+    dates the possible removal; the second closes the tenures at that first
+    timestamp and records the empty sample as `last`, so a reinsertion (even
+    both packs, swapped) is measured as a fresh "insert" from then rather
+    than a discontinuity dated from before removal."""
+    since = state.get("absent_since_ts")
+    if since is None:
+        state["absent_since_ts"] = sample["ts"]
+        state["absent_samples"] = 1
+        return
+    state["absent_samples"] = state.get("absent_samples", 1) + 1
+    if state["absent_samples"] < EMPTY_SAMPLES_TO_CLOSE:
+        return
+    for b in BATS:
+        registry.note_absent(state, b, since)
+    state["last"] = sample
+    state["absent_since_ts"] = None
+    state["absent_samples"] = 0
+
+
+def _note_good_sample(state):
+    state["absent_since_ts"] = None
+    state["absent_samples"] = 0
+
+
 def cmd_tick(args):
     state = load_state()
     sample = sample_all()
     if not sample["bats"]:
-        # Both packs are out -- close their tenures now (instead of leaving
-        # them open) and record this empty sample as `last`, so a reinsertion
-        # (even both packs, swapped) is measured as a fresh "insert" from
-        # this moment rather than a discontinuity dated from before removal.
-        for b in BATS:
-            registry.note_absent(state, b, sample["ts"])
-        state["last"] = sample
+        _note_empty_sample(state, sample)
         save_state(state)
         return
+    _note_good_sample(state)
     integrate(state, sample)
     append_log(sample)
     cfg = load_config_or_snapshot(state)
@@ -172,11 +199,10 @@ def cmd_sample(args):
     state = load_state()
     s = sample_all()
     if not s["bats"]:
-        for b in BATS:
-            registry.note_absent(state, b, s["ts"])
-        state["last"] = s
+        _note_empty_sample(state, s)
         save_state(state)
         die("error: no batteries present")
+    _note_good_sample(state)
     integrate(state, s)
     save_state(state)
     if not args.no_log:
@@ -379,8 +405,10 @@ def _registry_op(fn, *a, needs_cfg=False, **kw):
     """Load state, apply a pure registry edit, save. Never samples/integrates:
     these commands only change identity bookkeeping, not wear counters.
 
-    needs_cfg=True also loads config, so `now`/`bench_temp_c` can be passed
-    to registry ops (assign/same) that carry bench calendar-aging forward.
+    needs_cfg=True also loads config, so `bench_temp_c` (and `now`, for
+    ops that need the clock) can be passed to registry ops (assign/same)
+    that carry bench calendar-aging forward; the carry itself is bounded
+    by the new tenure's start, not by `now`.
     """
     state = load_state()
     if needs_cfg:
@@ -404,7 +432,7 @@ def cmd_pack_list(args):
         where = r["in_slot"] or ("retired" if r["retired"] else "bench")
         extra = f"  out {r['bench_hours']:.0f}h at {r['removed_at_soc']}%" if (where == "bench" and r["removed_at_soc"] is not None) else ""
         print(f"{r['name']:16} EFC {r['efc']:6.2f}  cal {r['calendar_score']:7.1f}  {where:8}{extra}")
-    hint = registry.rotation_hint(state, cfg["general"]["deadband_efc"], now, cfg["general"]["bench_temp_c"])
+    hint = registry.rotation_hint(state, cfg["general"]["deadband_efc"], now, cfg["general"]["bench_temp_c"], rows=rows)
     if hint:
         print(f"swap in next: {hint['swap_in']} for {hint['replace']} ({hint['behind_by_efc']:.2f} EFC behind)")
     for slot, q in sorted(state.get("pending", {}).items()):
@@ -426,6 +454,10 @@ def cmd_pack_same(args):
 
 def cmd_pack_reassign(args):
     _registry_op(registry.reassign, args.tenure_id, args.name)
+
+
+def cmd_pack_swap(args):
+    _registry_op(registry.swap)
 
 
 def cmd_pack_rename(args):
@@ -527,6 +559,7 @@ def build_parser():
     sp.set_defaults(func=cmd_pack_same, cls="control")
     sp = pk.add_parser("reassign"); sp.add_argument("tenure_id", type=int, metavar="tenure-id"); sp.add_argument("name")
     sp.set_defaults(func=cmd_pack_reassign, cls="pack-admin")
+    pk.add_parser("swap", help="exchange the labels of the packs in BAT0 and BAT1").set_defaults(func=cmd_pack_swap, cls="pack-admin")
     sp = pk.add_parser("rename"); sp.add_argument("old"); sp.add_argument("new")
     sp.set_defaults(func=cmd_pack_rename, cls="pack-admin")
     sp = pk.add_parser("retire"); sp.add_argument("name")

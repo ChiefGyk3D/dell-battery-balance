@@ -97,9 +97,9 @@ def fmt_status(state, s, cfg):
     for b in BATS:
         v = s["bats"].get(b)
         t = registry.open_tenure(state, b)
-        if t is not None:
-            slot_vals[b] = _display_efc_cal(state, t, now, bench_t)
         if not v:
+            # Same rule as state_json: an absent slot contributes no
+            # divergence, even if nothing has closed its tenure yet.
             lines.append(f"{b:6} {'absent':>20}")
             continue
         nominal = v["voltage_min_design_uv"]
@@ -107,6 +107,7 @@ def fmt_status(state, s, cfg):
         if not t:
             lines.append(f"{b:6} {now_col:>20} {'(no history)':>7}")
             continue
+        slot_vals[b] = _display_efc_cal(state, t, now, bench_t)
         e, cal = slot_vals[b]
         mean_soc = (t["soc_hours_sum"] / t["soc_hours"]) if t["soc_hours"] else 0.0
         pct90 = (100.0 * t["seconds_ge_90"] / t["seconds_observed"]) \
@@ -134,7 +135,7 @@ def fmt_status(state, s, cfg):
             if not r["in_slot"] and not r["retired"] and r["removed_at_soc"] is not None:
                 note = f"out {r['bench_hours']:.0f}h at {r['removed_at_soc']}%"
             lines.append(f"{r['name']:16} {r['efc']:>6.2f} {r['calendar_score']:>7.1f} {where:>8} {note}")
-    hint = registry.rotation_hint(state, cfg["general"]["deadband_efc"], now, bench_t)
+    hint = registry.rotation_hint(state, cfg["general"]["deadband_efc"], now, bench_t, rows=packs)
     if hint:
         lines.append(f"swap in next: {hint['swap_in']} for {hint['replace']} ({hint['behind_by_efc']:.2f} EFC behind)")
     pend = state.get("pending", {})
@@ -266,7 +267,7 @@ def state_json(state, s, cfg):
 
     out["packs"] = registry.all_packs(state, now, bench_t)
     out["pending"] = state.get("pending", {})
-    out["rotation"] = registry.rotation_hint(state, cfg["general"]["deadband_efc"], now, bench_t)
+    out["rotation"] = registry.rotation_hint(state, cfg["general"]["deadband_efc"], now, bench_t, rows=out["packs"])
 
     res = policy.resolve(cfg, state, s, now)
     out["recommendation"] = {

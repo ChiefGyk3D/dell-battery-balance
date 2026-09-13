@@ -28,7 +28,7 @@ DOCUMENTED = [
     ["field"], ["field", "--for", "3d"], ["field", "--stay"], ["restore"],
     ["pack", "list"], ["pack", "assign", "BAT0", "A"], ["pack", "new", "BAT0", "A"],
     ["pack", "same", "BAT0"], ["pack", "reassign", "3", "A"], ["pack", "rename", "A", "B"],
-    ["pack", "retire", "A"], ["pack", "unretire", "A"],
+    ["pack", "retire", "A"], ["pack", "unretire", "A"], ["pack", "swap"],
     ["reset", "--slot", "BAT0"], ["reset", "--pack", "A"], ["reset", "--all"],
     ["--polkit-class", "control", "--", "profile", "field"],
 ]

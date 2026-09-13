@@ -259,6 +259,25 @@ def reassign(state, tenure_id, name):
     return t
 
 
+def swap(state):
+    """Exchange the labels of the two open tenures atomically: the repair for
+    a pair that got mislabeled (answered wrong, or swapped while both were out
+    and reinserted so plausibly nothing tripped). No bench carry is involved:
+    neither pack is being re-identified as one that was out. Any pending
+    question on either slot is answered by the exchange."""
+    t0, t1 = open_tenure(state, "BAT0"), open_tenure(state, "BAT1")
+    if t0 is None or t1 is None:
+        empty = [s for s, t in (("BAT0", t0), ("BAT1", t1)) if t is None]
+        raise RegistryError(f"no pack present in {', '.join(empty)}; swap needs both slots occupied")
+    if not t0["pack"] and not t1["pack"]:
+        raise RegistryError("neither pack is identified; nothing to swap (use 'pack assign' / 'pack new')")
+    t0["pack"], t1["pack"] = t1["pack"], t0["pack"]
+    for slot in BATS:
+        state.get("pending", {}).pop(slot, None)
+    add_event(state, "pack", f"swap: BAT0 is now {t0['pack'] or '?'}, BAT1 is now {t1['pack'] or '?'}")
+    return t0, t1
+
+
 def rename_pack(state, old, new):
     if old not in state["packs"]:
         raise RegistryError(f"unknown pack {old}")
@@ -374,10 +393,12 @@ def all_packs(state, now, bench_temp_c):
     return sorted(rows, key=lambda r: (r["retired"], r["efc"], r["name"]))
 
 
-def rotation_hint(state, deadband, now, bench_temp_c):
+def rotation_hint(state, deadband, now, bench_temp_c, rows=None):
     """Name the least-worn bench pack when it is more than `deadband` EFC
-    behind the most-worn inserted pack."""
-    rows = all_packs(state, now, bench_temp_c)
+    behind the most-worn inserted pack. `rows` is all_packs() output when
+    the caller already has it."""
+    if rows is None:
+        rows = all_packs(state, now, bench_temp_c)
     inserted = [r for r in rows if r["in_slot"]]
     bench = [r for r in rows if not r["in_slot"] and not r["retired"]]
     if not inserted or not bench:

@@ -184,8 +184,10 @@ def load(path=CONFIG_FILE, must_exist=False):
     path = Path(path)
     try:
         exists = path.exists()
-    except OSError:
-        exists = False
+    except OSError as e:
+        # An unsearchable directory is not "no config": say so, so the
+        # caller records a config_error instead of silently defaulting.
+        raise ConfigError(f"{path}: {e}") from e
     if not exists:
         if must_exist:
             raise ConfigError(f"{path}: not found or unreadable")

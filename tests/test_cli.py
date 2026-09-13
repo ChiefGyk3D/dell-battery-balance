@@ -354,6 +354,21 @@ class ConfigCmd(CliBase):
         j = json.loads(out)
         self.assertEqual(j["profile"]["name"], "daily")
 
+    def test_unsearchable_config_dir_is_reported_not_defaulted(self):
+        if os.geteuid() == 0:
+            self.skipTest("root ignores directory modes")
+        locked = os.path.join(self.tmp.name, "locked")
+        os.makedirs(locked)
+        os.chmod(locked, 0o000)
+        self._mode_restore.append(locked)
+        os.environ["DBB_CONFIG_DIR"] = os.path.join(locked, "etc")
+        self._reimport_cli()
+        code, out, err = self.run_cli("status", "--json")
+        self.assertEqual(code, 0, err)
+        j = json.loads(out)
+        self.assertIsNotNone(j["config_error"])
+        self.assertIn("locked", j["config_error"])
+
     def test_get_json_is_the_whole_config(self):
         code, out, err = self.run_cli("config", "get", "--json")
         self.assertEqual(code, 0, err)
@@ -569,8 +584,11 @@ class Packs(CliBase):
         self.run_cli("pack", "new", "BAT1", "B")
         self.fs.bat("BAT0", present=0)
         self.fs.bat("BAT1", present=0)
-        code, _, _ = self.run_cli("sample")   # exit non-zero is fine: no batteries present
-        self.assertNotEqual(code, 0)
+        # Two empty samples in a row: the packs are really out (one empty
+        # sample alone is treated as a possible sysfs hiccup, see below).
+        for _ in range(2):
+            code, _, _ = self.run_cli("sample")   # exit non-zero is fine: no batteries present
+            self.assertNotEqual(code, 0)
         # Reinsert with the charges/capacities exchanged (as if the physical
         # packs had been swapped between slots).
         self.fs.bat("BAT0", capacity=60, charge_now=2760000, status="Discharging")
@@ -579,6 +597,70 @@ class Packs(CliBase):
         j = self.status()
         self.assertEqual(j["pending"]["BAT0"]["reason"], "insert")
         self.assertEqual(j["pending"]["BAT1"]["reason"], "insert")
+
+    def test_one_empty_sample_is_a_hiccup_not_a_removal(self):
+        # A transient loss of /sys/class/power_supply must not close both
+        # tenures and force two identity questions on the next good tick.
+        self.run_cli("sample")
+        self.run_cli("pack", "new", "BAT0", "A")
+        self.run_cli("pack", "new", "BAT1", "B")
+        tids = {b: self.status()["bats"][b]["tenure_id"] for b in ("BAT0", "BAT1")}
+        self.fs.bat("BAT0", present=0)
+        self.fs.bat("BAT1", present=0)
+        code, _, _ = self.run_cli("sample")
+        self.assertNotEqual(code, 0)
+        self.fs.bat("BAT0", charge_types="Trickle Fast Standard [Adaptive] Custom", start=50, stop=90, capacity=100, charge_now=4600000, status="Full")
+        self.fs.bat("BAT1", capacity=60, charge_now=2760000, status="Charging")
+        code, _, err = self.run_cli("sample")
+        self.assertEqual(code, 0, err)
+        j = self.status()
+        self.assertEqual(j["pending"], {})
+        self.assertEqual({b: j["bats"][b]["tenure_id"] for b in tids}, tids)
+        self.assertEqual(j["bats"]["BAT0"]["pack"], "A")
+
+    def test_two_empty_samples_close_tenures_at_the_first_empty_one(self):
+        self.run_cli("sample")
+        self.run_cli("pack", "new", "BAT0", "A")
+        self.fs.bat("BAT0", present=0)
+        self.fs.bat("BAT1", present=0)
+        self.run_cli("sample")
+        state_path = os.path.join(os.environ["DBB_STATE_DIR"], "state.json")
+        with open(state_path) as fh:
+            first_empty_ts = json.load(fh)["absent_since_ts"]
+        self.assertIsNotNone(first_empty_ts)
+        self.run_cli("sample")
+        with open(state_path) as fh:
+            st = json.load(fh)
+        self.assertIsNone(st["absent_since_ts"])
+        self.assertEqual(st["slots"], {"BAT0": None, "BAT1": None})
+        self.assertEqual([t["end_ts"] for t in st["tenures"]], [first_empty_ts, first_empty_ts])
+        self.assertTrue(any("A removed from BAT0" in e["detail"] for e in st["events"][-3:]), st["events"][-3:])
+
+    def test_pack_swap_exchanges_labels_and_needs_configure_class(self):
+        self.run_cli("sample")
+        self.run_cli("pack", "new", "BAT0", "A")
+        self.run_cli("pack", "new", "BAT1", "B")
+        code, _, err = self.run_cli("--polkit-class", "control", "--", "pack", "swap")
+        self.assertEqual(code, 3, err)
+        code, _, err = self.run_cli("pack", "swap")
+        self.assertEqual(code, 0, err)
+        j = self.status()
+        self.assertEqual(j["bats"]["BAT0"]["pack"], "B")
+        self.assertEqual(j["bats"]["BAT1"]["pack"], "A")
+
+    def test_status_text_shows_no_divergence_for_an_absent_slot(self):
+        # Text and JSON must agree: a slot whose tenure is still open (nothing
+        # has written state since it vanished) but which is absent from this
+        # sample has no divergence to print.
+        self.run_cli("sample")
+        self.run_cli("pack", "new", "BAT0", "A")
+        self.run_cli("pack", "new", "BAT1", "B")
+        self.fs.bat("BAT1", present=0)
+        self.assertIsNone(self.status()["divergence_efc"])
+        code, out, err = self.run_cli("status")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("divergence", out)
+        self.assertIn("absent", out)
 
     def test_pack_totals_used_for_displayed_efc_not_tenure_only(self):
         self.run_cli("sample")

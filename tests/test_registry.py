@@ -260,6 +260,34 @@ class Identification(unittest.TestCase):
         t = registry.same(self.s, "BAT1")
         self.assertEqual(t["pack"], "B")
 
+    def test_swap_exchanges_the_two_open_tenures_labels(self):
+        registry.assign(self.s, "BAT0", "A", new=True)
+        registry.assign(self.s, "BAT1", "B", new=True)
+        t0 = registry.open_tenure(self.s, "BAT0"); t1 = registry.open_tenure(self.s, "BAT1")
+        registry.swap(self.s)
+        self.assertEqual(t0["pack"], "B"); self.assertEqual(t1["pack"], "A")
+        self.assertEqual(registry.packs_in_slots(self.s), {"B": "BAT0", "A": "BAT1"})
+        self.assertIn("swap", self.s["events"][-1]["detail"])
+
+    def test_swap_moves_a_single_label_and_clears_pending(self):
+        # One slot identified, the other still an open question: the swap
+        # moves the one label across and answers both questions (the
+        # unlabeled side is now known to be "whatever was in the other slot").
+        registry.assign(self.s, "BAT0", "A", new=True)
+        self.assertIn("BAT1", self.s["pending"])
+        registry.swap(self.s)
+        self.assertIsNone(registry.open_tenure(self.s, "BAT0")["pack"])
+        self.assertEqual(registry.open_tenure(self.s, "BAT1")["pack"], "A")
+        self.assertEqual(self.s["pending"], {})
+
+    def test_swap_needs_both_slots_occupied_and_something_to_swap(self):
+        registry.note_absent(self.s, "BAT1", 5.0)
+        with self.assertRaises(registry.RegistryError):
+            registry.swap(self.s)
+        registry.observe(self.s, "BAT1", bat(), sample(10), 5.0)
+        with self.assertRaises(registry.RegistryError):
+            registry.swap(self.s)   # neither tenure labeled: nothing to exchange
+
     def test_reassign_moves_history(self):
         registry.assign(self.s, "BAT0", "A", new=True)
         registry.assign(self.s, "BAT1", "B", new=True)

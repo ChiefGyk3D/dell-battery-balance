@@ -42,6 +42,7 @@ def new_state():
         "discharge_first": {b: 0 for b in BATS}, "sessions": 0, "policy": None,
         "ac_run_start_ts": None, "profile_switched_ts": None,
         "one_off_revert_hours": None, "firmware": {}, "events": [],
+        "absent_since_ts": None, "absent_samples": 0,
         "config_error": None, "config_snapshot": None,
     }
 

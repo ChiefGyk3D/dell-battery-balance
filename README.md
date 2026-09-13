@@ -141,7 +141,8 @@ has drifted more than `general.deadband_efc` behind the most-worn inserted
 pack, `status`/`report`/`pack list` print a rotation hint naming which pack
 to swap in and which to pull.
 
-Getting an answer wrong is not permanent: `pack reassign <tenure-id> <name>`
+Getting an answer wrong is not permanent: `pack swap` exchanges the labels
+of the two inserted packs when both are wrong, and `pack reassign <tenure-id> <name>`
 re-labels a specific tenure after the fact — the undo for a misidentified
 `pack same`/`assign`/`new` — and moves that tenure's history to the
 (possibly different) named pack. `pack rename`, `pack retire` and `pack
@@ -264,6 +265,7 @@ does not recognize even though it is valid, equivalent TOML.
 | `pack new <slot> <name>` | register the pack in `<slot>` as a brand-new named pack |
 | `pack same <slot>` | confirm the pack in `<slot>` is the one that was previously there |
 | `pack reassign <tenure-id> <name>` | re-label one tenure's history to a (possibly different) pack — the undo for a wrong `assign`/`new`/`same` |
+| `pack swap` | exchange the labels of the packs in BAT0 and BAT1 — the repair for a pair that got mislabeled |
 | `pack rename <old> <new>` | rename a pack |
 | `pack retire <name>` | mark a pack retired (must not be in a slot) |
 | `pack unretire <name>` | un-retire a pack |
@@ -297,7 +299,7 @@ Two polkit actions gate the two wrappers used above:
 | Action | Wrapper | Used for | Default prompt |
 |---|---|---|---|
 | `com.chiefgyk3d.dellbatterybalance.control` | `dbb-control` | `config get`, `profile set`, `field`, `restore`, `balance --apply`, `pack list/assign/new/same` | the user's own password, kept (`auth_self_keep`) |
-| `com.chiefgyk3d.dellbatterybalance.configure` | `dbb-configure` | `config set/apply/validate`, `profile create/edit/delete`, `reset`, `pack reassign/rename/retire/unretire` | admin password, kept (`auth_admin_keep`) |
+| `com.chiefgyk3d.dellbatterybalance.configure` | `dbb-configure` | `config set/apply/validate`, `profile create/edit/delete`, `reset`, `pack reassign/swap/rename/retire/unretire` | admin password, kept (`auth_admin_keep`) |
 
 `control` deliberately still prompts: a profile switch can park both packs
 at 100% for days, the exact harm this tool exists to prevent. To loosen it
@@ -502,10 +504,17 @@ clipping, sysfs-hiccup pending).
   the guess.
 - **Repairing a pair that got swapped while both were out:** if BAT0 and
   BAT1 both end up mislabeled after being pulled together and reinserted
-  swapped, the fix is: `pack new BAT0 TMP` (frees BAT0's current label),
-  `pack assign BAT1 A`, `pack assign BAT0 B` (now that `A` is free to move),
-  then `reset --pack TMP` (discards the throwaway tenure the first step
-  created).
+  swapped, `pack swap` exchanges the two labels in one step (it also answers
+  any pending question on either slot).
+- **Both packs must be missing for two consecutive samples (about four
+  minutes on the timer) before their tenures are closed.** A single empty
+  sample is treated as a possible transient loss of `/sys/class/power_supply`
+  rather than a removal, so a hiccup does not cost two identity questions.
+  The cost: a both-packs-out swap completed inside one tick window is not
+  detected as an insert; if the reinserted packs' charge readings differ
+  enough from what each slot last saw it is still caught as a discontinuity,
+  and if not, `pack swap` fixes it after the fact. Removals recorded this way
+  are dated from the first empty sample, not the second.
 - **Only BAT0 exposes `charge_control_*` to Linux sysfs.** BAT1 is reachable
   only via `dell-wmi-sysman`, so generic tools like TLP can never manage it.
   The script uses sysman for both and falls back to `power_supply` for BAT0.
