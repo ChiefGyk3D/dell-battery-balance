@@ -274,5 +274,61 @@ class Identification(unittest.TestCase):
         self.assertEqual(registry.packs_in_slots(self.s), {})
 
 
+class Totals(unittest.TestCase):
+    def setUp(self):
+        self.s = st.new_state()
+        registry.observe(self.s, "BAT0", bat(), sample(0), None)
+        registry.assign(self.s, "BAT0", "A", new=True)
+        registry.open_tenure(self.s, "BAT0")["discharge_uah"] = 1.0 * DESIGN
+        registry.note_absent(self.s, "BAT0", 100.0)              # A to the bench at 50%
+        registry.observe(self.s, "BAT0", bat(), sample(200), 100.0)
+        registry.assign(self.s, "BAT0", "C", new=True)
+        registry.open_tenure(self.s, "BAT0")["discharge_uah"] = 0.2 * DESIGN
+        registry.observe(self.s, "BAT1", bat(), sample(200), None)
+        registry.assign(self.s, "BAT1", "B", new=True)
+        registry.open_tenure(self.s, "BAT1")["discharge_uah"] = 1.4 * DESIGN
+
+    def test_totals_sum_tenures(self):
+        registry.observe(self.s, "BAT0", bat(), sample(300), 100.0)
+        registry.note_absent(self.s, "BAT0", 400.0)
+        registry.observe(self.s, "BAT0", bat(), sample(500), 100.0)
+        registry.assign(self.s, "BAT0", "A")                       # A back in; second tenure
+        registry.open_tenure(self.s, "BAT0")["discharge_uah"] = 0.5 * DESIGN
+        tot = registry.pack_totals(self.s, "A", now=600.0, bench_temp_c=25.0)
+        self.assertAlmostEqual(tot["efc"], 1.5)
+        self.assertEqual(tot["tenures"], 2)
+        self.assertEqual(tot["in_slot"], "BAT0")
+        self.assertEqual(tot["bench_calendar"], 0.0)
+
+    def test_bench_estimate_accrues_while_out(self):
+        tot = registry.pack_totals(self.s, "A", now=100.0 + 10 * 3600, bench_temp_c=25.0)
+        self.assertIsNone(tot["in_slot"])
+        self.assertAlmostEqual(tot["bench_hours"], 10.0)
+        self.assertAlmostEqual(tot["bench_calendar"], 10.0 * wear.calendar_stress(50, 25.0))
+        hot = registry.pack_totals(self.s, "A", now=100.0 + 10 * 3600, bench_temp_c=35.0)
+        self.assertGreater(hot["bench_calendar"], tot["bench_calendar"])
+
+    def test_efc_for_slot_uses_pack_total(self):
+        self.assertAlmostEqual(registry.efc_for_slot(self.s, "BAT1"), 1.4)
+        registry.observe(self.s, "BAT1", bat(charge=4500000), sample(300), 100.0)   # trips → unidentified
+        self.assertAlmostEqual(registry.efc_for_slot(self.s, "BAT1"), 0.0)          # tenure-only
+
+    def test_rotation_hint_names_least_worn_bench_pack(self):
+        hint = registry.rotation_hint(self.s, deadband=0.5, now=200.0, bench_temp_c=25.0)
+        # inserted: C 0.2, B 1.4 (max); bench: A 1.0 → 1.4 - 1.0 = 0.4 < 0.5 → no hint
+        self.assertIsNone(hint)
+        registry.open_tenure(self.s, "BAT1")["discharge_uah"] = 2.0 * DESIGN
+        hint = registry.rotation_hint(self.s, deadband=0.5, now=200.0, bench_temp_c=25.0)
+        self.assertEqual(hint, {"swap_in": "A", "behind_by_efc": 1.0, "replace": "B"})
+
+    def test_all_packs_sorted_and_flags(self):
+        registry.note_absent(self.s, "BAT1", 300.0)
+        registry.retire_pack(self.s, "B")
+        rows = registry.all_packs(self.s, now=400.0, bench_temp_c=25.0)
+        self.assertEqual([r["name"] for r in rows], ["C", "A", "B"])
+        self.assertTrue(rows[2]["retired"])
+        self.assertEqual(rows[0]["in_slot"], "BAT0")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -62,7 +62,7 @@ def fmt_status(state, s, cfg):
             lines.append(f"revert in {max(left, 0.0):.1f}h -> {rv['to']}")
     lines.append("")
 
-    hdr = f"{'':6} {'now':>16} {'EFC':>7} {'discharged':>12} {'cal.score':>10} {'mean SoC':>9} {'>=90%':>8}"
+    hdr = f"{'':6} {'now':>20} {'EFC':>7} {'discharged':>12} {'cal.score':>10} {'mean SoC':>9} {'>=90%':>8}"
     lines.append(hdr)
     lines.append("-" * len(hdr))
 
@@ -70,18 +70,19 @@ def fmt_status(state, s, cfg):
         v = s["bats"].get(b)
         slot = registry.slot_counters(state, b)
         if not v:
-            lines.append(f"{b:6} {'absent':>16}")
+            lines.append(f"{b:6} {'absent':>20}")
             continue
         nominal = v["voltage_min_design_uv"]
-        now = f"{v['capacity']}% {v['status']}"
+        t = registry.open_tenure(state, b)
+        now = f"{(t['pack'] if t and t['pack'] else '?')} {v['capacity']}% {v['status']}"
         if not slot:
-            lines.append(f"{b:6} {now:>16} {'(no history)':>7}")
+            lines.append(f"{b:6} {now:>20} {'(no history)':>7}")
             continue
         mean_soc = (slot["soc_hours_sum"] / slot["soc_hours"]) if slot["soc_hours"] else 0.0
         pct90 = (100.0 * slot["seconds_ge_90"] / slot["seconds_observed"]) \
             if slot["seconds_observed"] else 0.0
         lines.append(
-            f"{b:6} {now:>16} {efc(slot):>7.2f} "
+            f"{b:6} {now:>20} {efc(slot):>7.2f} "
             f"{wh(slot['discharge_uah'], nominal):>10.1f}Wh "
             f"{slot['calendar_score']:>10.1f} {mean_soc:>8.1f}% {pct90:>7.1f}%")
 
@@ -93,6 +94,25 @@ def fmt_status(state, s, cfg):
         lines.append(f"cycle divergence: {d:.2f} EFC")
         cd = abs(s0["calendar_score"] - s1["calendar_score"])
         lines.append(f"calendar divergence: {cd:.1f}")
+
+    packs = registry.all_packs(state, time.time(), cfg["general"]["bench_temp_c"])
+    if packs:
+        lines.append("")
+        lines.append(f"{'pack':8} {'EFC':>6} {'cal.':>7} {'where':>8} {'note'}")
+        for r in packs:
+            where = r["in_slot"] or ("retired" if r["retired"] else "bench")
+            note = ""
+            if not r["in_slot"] and not r["retired"] and r["removed_at_soc"] is not None:
+                note = f"out {r['bench_hours']:.0f}h at {r['removed_at_soc']}%"
+            lines.append(f"{r['name']:8} {r['efc']:>6.2f} {r['calendar_score']:>7.1f} {where:>8} {note}")
+    hint = registry.rotation_hint(state, cfg["general"]["deadband_efc"], time.time(), cfg["general"]["bench_temp_c"])
+    if hint:
+        lines.append(f"swap in next: {hint['swap_in']} for {hint['replace']} ({hint['behind_by_efc']:.2f} EFC behind)")
+    pend = state.get("pending", {})
+    for slot, q in sorted(pend.items()):
+        prev = f", was {q['previous_pack']}" if q.get("previous_pack") else ""
+        lines.append(f"PENDING {slot}: which pack is this? guess={q['guess']} ({q['reason']}{prev}); "
+                     f"answer with: pack same {slot} | pack assign {slot} NAME | pack new {slot} NAME")
 
     first = state.get("discharge_first", {})
     if any(first.values()):
@@ -163,6 +183,10 @@ def state_json(state, s, cfg):
             "pct_ge90": None,
             "discharged_wh": None,
         }
+        t = registry.open_tenure(state, b)
+        entry["pack"] = t["pack"] if t else None
+        entry["tenure_id"] = t["id"] if t else None
+        entry["pending"] = state.get("pending", {}).get(b)
         if slot:
             entry["efc"] = round(efc(slot), 3)
             entry["calendar_score"] = round(slot["calendar_score"], 2)
@@ -194,6 +218,12 @@ def state_json(state, s, cfg):
     out["firmware"] = state.get("firmware", {})
     out["config_error"] = state.get("config_error")
     out["events"] = state.get("events", [])[-10:]
+
+    now = time.time()
+    bench_t = cfg["general"]["bench_temp_c"]
+    out["packs"] = registry.all_packs(state, now, bench_t)
+    out["pending"] = state.get("pending", {})
+    out["rotation"] = registry.rotation_hint(state, cfg["general"]["deadband_efc"], now, bench_t)
 
     res = policy.resolve(cfg, state, s, time.time())
     out["recommendation"] = {

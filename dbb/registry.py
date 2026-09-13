@@ -20,7 +20,7 @@ import re
 
 from dbb.state import add_event, now_iso
 from dbb.sysfs import BATS
-from dbb.wear import blank_slot, efc
+from dbb.wear import blank_slot, calendar_stress, efc
 
 PACK_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,16}$")
 MIGRATION_LETTERS = {"BAT0": "A", "BAT1": "B"}
@@ -170,11 +170,6 @@ def observe(state, slot, v, s, dt):
     return t, changed
 
 
-def efc_for_slot(state, slot):
-    t = open_tenure(state, slot)
-    return efc(t) if t else None
-
-
 # ---------------------------------------------------------- identification
 
 def _check_name(name):
@@ -317,3 +312,63 @@ def migrate_v1(state):
     add_event(state, "migrate", "state v1 -> v2: slots became packs "
               + ", ".join(f"{s}={MIGRATION_LETTERS[s]}" for s in BATS if old_slots.get(s)))
     return state
+
+
+# ------------------------------------------------------------------ totals
+
+def pack_totals(state, name, now, bench_temp_c):
+    p = state["packs"][name]
+    tenures = [t for t in state["tenures"] if t["pack"] == name]
+    discharge = sum(t["discharge_uah"] for t in tenures)
+    design = next((t["design_uah"] for t in tenures if t.get("design_uah")), None)
+    calendar = sum(t["calendar_score"] for t in tenures)
+    in_slot = packs_in_slots(state).get(name)
+    bench_hours = bench_calendar = 0.0
+    if in_slot is None and not p["retired"] and p.get("removed_ts") is not None:
+        bench_hours = max(0.0, (now - p["removed_ts"]) / 3600.0)
+        soc = p.get("removed_at_soc")
+        if soc is not None:
+            bench_calendar = bench_hours * calendar_stress(soc, bench_temp_c)
+    return {
+        "efc": (discharge / design) if design else 0.0,
+        "discharge_uah": discharge,
+        "calendar_score": calendar + bench_calendar,
+        "bench_calendar": bench_calendar,
+        "bench_hours": bench_hours,
+        "in_slot": in_slot,
+        "tenures": len(tenures),
+        "retired": p["retired"],
+        "removed_at_soc": p.get("removed_at_soc"),
+    }
+
+
+def efc_for_slot(state, slot):
+    t = open_tenure(state, slot)
+    if t is None:
+        return None
+    if t["pack"]:
+        # now/bench_temp_c don't matter here: EFC is discharge/design only,
+        # the bench estimate never feeds into it.
+        return pack_totals(state, t["pack"], now=0.0, bench_temp_c=25.0)["efc"]
+    return efc(t)
+
+
+def all_packs(state, now, bench_temp_c):
+    rows = [{"name": n, **pack_totals(state, n, now, bench_temp_c)} for n in state["packs"]]
+    return sorted(rows, key=lambda r: (r["retired"], r["efc"], r["name"]))
+
+
+def rotation_hint(state, deadband, now, bench_temp_c):
+    """Name the least-worn bench pack when it is more than `deadband` EFC
+    behind the most-worn inserted pack."""
+    rows = all_packs(state, now, bench_temp_c)
+    inserted = [r for r in rows if r["in_slot"]]
+    bench = [r for r in rows if not r["in_slot"] and not r["retired"]]
+    if not inserted or not bench:
+        return None
+    worst = max(inserted, key=lambda r: r["efc"])
+    best = min(bench, key=lambda r: r["efc"])
+    behind = worst["efc"] - best["efc"]
+    if behind <= deadband:
+        return None
+    return {"swap_in": best["name"], "replace": worst["name"], "behind_by_efc": round(behind, 3)}

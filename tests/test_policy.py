@@ -12,11 +12,13 @@ def sample(ac=1, present=("BAT0", "BAT1")):
     return dict(ts=1000.0, boot_id="b", ac_online=ac, bats={b: dict(one) for b in present})
 
 
-def seed(state, slot, efc_value):
+def seed(state, slot, efc_value, name):
     v = dict(status="Full", capacity=80, charge_now_uah=3680000, charge_full_uah=DESIGN,
              charge_full_design_uah=DESIGN, voltage_now_uv=11400000,
              voltage_min_design_uv=11400000, current_now_ua=0, temp_dc=313)
     t, _ = registry.observe(state, slot, v, sample(present=(slot,)), None)
+    if t["pack"] is None:
+        registry.assign(state, slot, name, new=True)
     t["discharge_uah"] = efc_value * DESIGN
     return t
 
@@ -39,8 +41,8 @@ class Resolve(unittest.TestCase):
     def setUp(self):
         self.cfg = config.default_config()
         self.state = st.new_state()
-        seed(self.state, "BAT0", 1.0)
-        seed(self.state, "BAT1", 1.0)
+        seed(self.state, "BAT0", 1.0, "A")
+        seed(self.state, "BAT1", 1.0, "B")
         self.state["profile_switched_ts"] = 0.0
 
     def test_daily_neutral(self):
@@ -50,7 +52,7 @@ class Resolve(unittest.TestCase):
         self.assertIsNone(r.revert)
 
     def test_daily_diverged(self):
-        seed(self.state, "BAT1", 2.0)
+        seed(self.state, "BAT1", 2.0, "B")
         r = policy.resolve(self.cfg, self.state, sample(), now=100.0)
         self.assertEqual(r.bands, {"BAT1": (50, 60), "BAT0": (80, 90)})
         self.assertEqual(r.roles, {"BAT1": "protect", "BAT0": "work"})
@@ -79,7 +81,7 @@ class Resolve(unittest.TestCase):
 
     def test_deadband_from_config(self):
         self.cfg["general"]["deadband_efc"] = 2.0
-        seed(self.state, "BAT1", 2.5)
+        seed(self.state, "BAT1", 2.5, "B")
         r = policy.resolve(self.cfg, self.state, sample(), now=100.0)
         self.assertEqual(r.roles, {"BAT0": "neutral", "BAT1": "neutral"})
 
@@ -88,8 +90,8 @@ class Revert(unittest.TestCase):
     def setUp(self):
         self.cfg = config.default_config()
         self.state = st.new_state()
-        seed(self.state, "BAT0", 1.0)
-        seed(self.state, "BAT1", 1.0)
+        seed(self.state, "BAT0", 1.0, "A")
+        seed(self.state, "BAT1", 1.0, "B")
         policy.switch_profile(self.cfg, self.state, "field", now=0.0, reason="test")
 
     def test_switch_records(self):
