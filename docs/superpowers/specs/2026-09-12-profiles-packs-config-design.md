@@ -108,11 +108,15 @@ Rules:
 ### 1.3 Editing surfaces
 
 - CLI: `config get|set`, `profile edit`, `profile create`, `profile delete`.
-- Applet config dialog: writes a complete TOML document to
-  `$XDG_RUNTIME_DIR/dell-battery-balance/config-<pid>.toml` and runs
-  `pkexec dell-battery-balance config apply <path>`. Root validates the file
-  before installing it and refuses on any error, printing the reason for the
-  dialog to display. The applet never writes `/etc` itself.
+- Applet config dialog: submits a complete config as a JSON document with the
+  TOML's exact shape (so only Python ever emits TOML) via
+  `pkexec --user dell-battery-balance dbb-configure config apply --json <path>`.
+  The candidate is staged through `mktemp /tmp/dbb-config-XXXXXX.json`,
+  mode 644, and removed after the call — `$XDG_RUNTIME_DIR` is mode 700 and
+  unreadable by the service account. The file carries no secrets (bands and
+  a *path* to the BIOS password file). Root validates before installing and
+  refuses on any error, printing the reason for the dialog to display. The
+  applet never writes `/etc` itself.
 
 ## 2. Pack registry and tenures
 
@@ -259,7 +263,10 @@ consume the same dict so the applet can never see something the CLI cannot.
 replace. Contains: `packs`, `tenures`, `slots`, `last` sample, `boot_id`,
 `discharge_first`, `sessions`, `profile_switched_ts`, `one_off_revert`,
 `firmware` read-back per slot, `pending` questions, `events` (bounded to the
-last 500). `samples-YYYY.csv` next to it, one file per year.
+last 500). `samples-YYYY.csv` next to it, one file per year. Since 0.3 the
+directory is setgid (`2775`) and `state.json`/`samples-YYYY.csv` are `0664`,
+group-writable by the service account, so a stray root run cannot lock it
+out.
 
 ## 6. Applet
 
@@ -296,8 +303,10 @@ Profiles/Packs/General pages edit a working copy of the TOML and apply via
 
 The applet, not the timer, raises desktop notifications (root has no session
 bus). It notifies once per event id for: pending identity question, revert
-fired, firmware mismatch, pack removed above 70%. Event ids seen are kept in
-KConfig so a restart does not re-notify.
+fired, firmware mismatch, pack removed above 70%. Events carry monotonic
+ids; the applet keeps the highest id it has notified in KConfig
+(`lastNotifiedEventId`), so a restart does not re-notify and a fresh install
+adopts the backlog silently.
 
 ## 7. Errors
 
@@ -407,7 +416,9 @@ RestrictRealtime=yes
 `dell-battery-balance:dell-battery-balance 0755`, files `0644` (applet reads).
 `/etc/dell-battery-balance` owned `root:dell-battery-balance 2775`,
 `config.toml` and `config.toml.bak` `0664`, so `config apply` running as the
-scoped user can write them.
+scoped user can write them. Since 0.3 the state directory is also `2775`
+setgid and its files `0664`, matching `/etc`, so a stray root-owned write
+there is still group-writable by the service account.
 
 **Applet actions.** pkexec selects a polkit action by the executable's
 path, so there are two thin wrappers, `/usr/local/libexec/dbb-control` and

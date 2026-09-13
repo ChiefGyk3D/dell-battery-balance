@@ -253,10 +253,10 @@ does not recognize even though it is valid, equivalent TOML.
 | `profile create <name> --from <name>` | clone an existing profile |
 | `profile edit <name> key=value ...` | change one profile's fields; `revert=none` or `revert.after_hours=none` remove auto-revert |
 | `profile delete <name>` | remove a profile (not `daily`, not the active one) |
-| `config get [key]` | print the whole config or one dotted key |
+| `config get [key] [--json]` | print the whole config or one dotted key; `--json` is what the applet's config dialog reads |
 | `config set key=value ...` | change `general.*` or `profiles.*` fields |
-| `config validate <path>` | check a candidate file without writing anything |
-| `config apply <path>` | replace the whole config from a file (must be a complete, valid config) |
+| `config validate [--json] <path>` | check a candidate file without writing anything |
+| `config apply [--json] <path>` | replace the whole config from a TOML file, or with `--json` a JSON document of the same shape (must be complete and valid) |
 | `field [--for <duration> \| --stay]` | alias: `profile set field` |
 | `restore` | alias: `profile set <previous_profile>` |
 | `pack list` | list known packs (EFC, calendar score, slot/bench/retired) and any pending identity questions |
@@ -335,6 +335,10 @@ ls -l /etc/systemd/system | grep dell-battery
 dell-battery-balance status
     # after an upgrade: EFC/calendar-score numbers match what they were
     # pre-upgrade -- state.json was preserved, not reset
+dell-battery-balance --version
+    # 0.3.0
+ls /usr/share/knotifications6/dell_battery_balance.notifyrc
+dell-battery-balance config get --json | python3 -m json.tool > /dev/null
 ```
 
 ## Plasma applet
@@ -373,6 +377,49 @@ Field mode is flagged in two places on purpose — a red dot on the tray icon
 and a warning banner in the popup — because it disables the calendar-wear
 protection and is otherwise easy to leave on by accident.
 
+### Configuring from the applet
+
+Right-click the widget → Configure. Four pages:
+
+- **Display** — text beside the icon (none / profile label / EFC
+  divergence; only visible when the widget sits in a panel, the system tray
+  keeps items icon-only), poll interval, whether pack details start
+  expanded, and whether to raise notifications. Saved in the applet's own
+  KConfig.
+- **Profiles** — pick a profile, add one as a copy, delete one (`daily` and
+  the active profile are protected), and edit its label, type (balancing or
+  fixed), bands, auto-revert triggers and per-slot pins.
+- **Packs** — rename, retire or un-retire packs, and answer pending identity
+  questions.
+- **General** — balance deadband, automatic balancing, bench temperature.
+
+Profiles and General edit a working copy and submit the *whole* config on
+Apply/OK through the configure-class polkit action, so one polkit prompt
+per apply. The candidate is staged as a JSON file under `/tmp` (mode 644,
+removed straight after; it carries no secrets) because the service account
+cannot read the user's runtime directory. The tool validates before
+installing and refuses on any error; use **Apply** rather than OK to see
+the error message, since OK closes the dialog. Packs actions run
+immediately, one prompt each.
+
+### Notifications
+
+The applet raises a desktop notification once per state event for: a
+pending pack identity question, an auto-revert firing, a firmware
+read-back mismatch, and a pack removed above 70%. They come from the
+applet (root has no session bus), so they need the widget running and lag
+by at most one poll interval. The event definitions live in
+`/usr/share/knotifications6/dell_battery_balance.notifyrc`, which
+`install.sh` places — re-run `sudo ./install.sh` when upgrading from 0.2,
+then restart the shell so the applet package reloads:
+
+```sh
+systemctl --user restart plasma-plasmashell.service
+```
+
+Notification sounds/popups per event are configurable in System Settings
+→ Notifications → Application-specific → Dell Battery Balance.
+
 ## State
 
 Durable data lives in `/var/lib/dell-battery-balance`, owned
@@ -392,6 +439,12 @@ bit keeps new files in the service group):
   the wear model can be recomputed or re-derived later if the heuristics
   change without ever-growing files.
 
+Events carry an `id` (monotonic, never reused) since 0.3; a 0.2 state file
+gets its existing events numbered once on first load. `reset --all` keeps
+the id sequence running rather than restarting it, so an applet that has
+already notified past a given id never re-notifies just because the state
+was reset.
+
 Configuration lives in `/etc/dell-battery-balance/config.toml`, owned
 `root:dell-battery-balance` (directory `2775`, file `0664`) so `config
 set`/`config apply`, run as the service account through `dbb-configure`, can
@@ -409,8 +462,9 @@ account, and the pack registry that tracks wear per physical pack across
 swaps and rotations (with confirm-on-swap identity, since these packs expose
 no per-unit identity) are all implemented, per
 [docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md](docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md).
-What remains: on the applet side, a full Plasma config dialog and
-notifications.
+The applet's config dialog and notifications landed in 0.3, completing the
+spec. Open follow-ups are tracked in the issues (`pack swap`, `--for`
+clipping, sysfs-hiccup pending).
 
 ## Known limits
 
@@ -443,6 +497,17 @@ notifications.
 - Energy that leaves a pack while the machine is off or suspended is still
   counted as discharge. Gaps longer than 15 minutes skip *calendar* accrual
   but still count charge deltas.
+- Tray text is shown only when the widget sits in a panel; the system tray
+  keeps items icon-only regardless of the Display page's setting.
+- Notifications need the applet running and lag by up to one poll interval,
+  since root has no session bus to raise them from.
+- A config error after pressing OK in the applet's dialog is not shown —
+  OK closes the dialog before the reply arrives; use **Apply** to see it.
+- More than ten qualifying events between two applet polls are marked seen
+  without being raised: `status --json` carries only the last ten events,
+  and the applet advances its notified-id watermark to the highest one it
+  sees, so anything older than that window is skipped silently. The four
+  notified kinds are rare enough that this is unlikely to matter in practice.
 
 ## Tests
 
@@ -450,24 +515,33 @@ notifications.
 python3 -m unittest discover -s tests -v
 ```
 
-146 tests across seven files (`test_wear_model.py`, `test_policy.py`,
+178 tests across eight files (`test_wear_model.py`, `test_policy.py`,
 `test_config.py`, `test_apply.py`, `test_registry.py`, `test_cli.py`,
-`test_state.py`), all against a fake `/sys` tree and temp state/config dirs
-(`DBB_SYSFS_ROOT`, `DBB_STATE_DIR`, `DBB_CONFIG_DIR`) — never real hardware
-or files. Coverage includes: three full sequential-discharge cycles,
-asserting the pack doing the draining accumulates more EFC, the idle pack
-accumulates more calendar score, the drain-order detector credits one event
-per unplug, the deadband holds near-equal packs neutral, and bands clamp to
-the firmware's limits; the policy engine's role/band/pin/revert resolution;
-config schema validation and `set_dotted` coercion; firmware apply/read-back
-and mismatch recording; the pack registry's tenure lifecycle, swap detection
-(including both packs pulled and reinserted swapped) and identity guessing,
-totals/rotation-hint math with bench calendar-aging carried across a
-reinsertion, and version-1-to-2 state migration; and the full CLI surface,
-including profile switching, `--for` one-off reverts, config
-get/set/validate/apply strictness, the `pack ...` subcommands and
+`test_state.py`, `test_cli_surface.py`), all against a fake `/sys` tree and
+temp state/config dirs (`DBB_SYSFS_ROOT`, `DBB_STATE_DIR`, `DBB_CONFIG_DIR`)
+— never real hardware or files. Coverage includes: three full
+sequential-discharge cycles, asserting the pack doing the draining
+accumulates more EFC, the idle pack accumulates more calendar score, the
+drain-order detector credits one event per unplug, the deadband holds
+near-equal packs neutral, and bands clamp to the firmware's limits; the
+policy engine's role/band/pin/revert resolution; config schema validation
+and `set_dotted` coercion; firmware apply/read-back and mismatch recording;
+the pack registry's tenure lifecycle, swap detection (including both packs
+pulled and reinserted swapped) and identity guessing, totals/rotation-hint
+math with bench calendar-aging carried across a reinsertion, and
+version-1-to-2 state migration; the full CLI surface, including profile
+switching, `--for` one-off reverts, config get/set/validate/apply
+strictness (both TOML and `--json`), the `pack ...` subcommands and
 `reset --pack`, the `report` tenure table, the per-year sample-log rotation,
-and the polkit-class gate (control vs. pack-admin/configure).
+and the polkit-class gate (control vs. pack-admin/configure); and
+`test_cli_surface.py`, which parses the README's CLI reference table and
+asserts every documented form actually parses and every parser subcommand
+is documented, so the two cannot drift apart silently.
+
+`plasmoid/tools/load-page.py` is a separate, headless check for the
+applet's config pages — it loads a QML file with no Plasma shell present
+and reports `ok` or the QML error (needs `python3-pyqt6`); it is not part
+of the unit suite and does not run under `unittest discover`.
 
 
 ---

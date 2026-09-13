@@ -12,7 +12,7 @@
         "Id": "com.chiefgyk3d.dellbatterybalance",
         "License": "GPL-3.0-or-later",
         "Name": "Dell Battery Balance",
-        "Version": "1.0",
+        "Version": "1.1",
         "Website": "https://github.com/ChiefGyk3D/dell-battery-balance"
     },
     "X-Plasma-API-Minimum-Version": "6.0"
