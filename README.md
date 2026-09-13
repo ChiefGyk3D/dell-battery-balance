@@ -384,6 +384,10 @@ Field mode is flagged in two places on purpose — a red dot on the tray icon
 and a warning banner in the popup — because it disables the calendar-wear
 protection and is otherwise easy to leave on by accident.
 
+<p align="center">
+  <img src="media/applet-popup.png" width="520" alt="The applet popup: both packs with wear numbers, the ceiling read-back, divergence, EC drain order, recent events, and the profile buttons">
+</p>
+
 ### Configuring from the applet
 
 Right-click the widget → Configure. Four pages:
@@ -399,6 +403,14 @@ Right-click the widget → Configure. Four pages:
 - **Packs** — rename, retire or un-retire packs, and answer pending identity
   questions.
 - **General** — balance deadband, automatic balancing, bench temperature.
+
+<p align="center">
+  <img src="media/applet-config-profiles.png" width="600" alt="Profiles page: profile picker, add-as-copy, delete, label, description, type, the three bands, auto-revert and pins">
+</p>
+<p align="center">
+  <img src="media/applet-config-packs.png" width="600" alt="Packs page: each known pack with EFC, calendar score and location, rename and retire buttons"><br>
+  <img src="media/applet-config-general.png" width="600" alt="General page: balance deadband, automatic balancing, bench temperature">
+</p>
 
 Profiles and General edit a working copy and submit the *whole* config on
 Apply/OK through the configure-class polkit action, so one polkit prompt
