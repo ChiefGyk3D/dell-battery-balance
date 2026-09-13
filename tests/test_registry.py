@@ -5,9 +5,9 @@ from dbb import registry, state as st, wear
 DESIGN = 4600000
 
 
-def bat(charge=2300000, full=DESIGN, capacity=50, present=1, status="Discharging"):
+def bat(charge=2300000, full=DESIGN, capacity=50, present=1, status="Discharging", design=DESIGN):
     return dict(status=status, capacity=capacity, charge_now_uah=charge, charge_full_uah=full,
-                charge_full_design_uah=DESIGN, voltage_now_uv=11400000,
+                charge_full_design_uah=design, voltage_now_uv=11400000,
                 voltage_min_design_uv=11400000, current_now_ua=0, temp_dc=313, present=present)
 
 
@@ -187,6 +187,23 @@ class Detection(unittest.TestCase):
         self.assertIn("warning", kinds)
         self.assertEqual(self.s["packs"]["B"]["removed_at_soc"], 98)
         self.assertEqual(self.s["packs"]["B"]["removed_ts"], 300.0)
+
+    def test_none_design_uah_does_not_raise_and_self_heals(self):
+        # A transient sysfs read failure can leave charge_full_design_uah
+        # unreadable; the slot must not crash and must recover once a good
+        # reading shows up, rather than staying blind forever.
+        t0, changed0 = registry.observe(self.s, "BAT0", bat(charge=2300000, capacity=50, design=None),
+                                         sample(0), None)
+        self.assertIsNone(t0["design_uah"])
+        # A huge jump arrives together with the first good design reading:
+        # with no yardstick for the *previous* interval, no discontinuity is
+        # claimed for it, but the tenure self-heals its design_uah.
+        t1, changed1 = registry.observe(self.s, "BAT0", bat(charge=4500000, capacity=98), sample(120), 120.0)
+        self.assertFalse(changed1)
+        self.assertEqual(t1["design_uah"], DESIGN)
+        # Now that design_uah is real, a later big jump does trip.
+        t2, changed2 = registry.observe(self.s, "BAT0", bat(charge=2300000, capacity=50), sample(240), 120.0)
+        self.assertTrue(changed2)
 
 
 class Identification(unittest.TestCase):

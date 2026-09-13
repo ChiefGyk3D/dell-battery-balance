@@ -110,6 +110,8 @@ def occupancy_change(t, v, dt):
     if (v.get("charge_full_uah") and t.get("last_charge_full_uah")
             and v["charge_full_uah"] != t["last_charge_full_uah"]):
         return "charge_full"
+    if not t.get("design_uah"):
+        return None   # a transient sysfs read failure left us without a yardstick; wait for a good one
     if dt is None or v.get("charge_now_uah") is None or t.get("last_charge_uah") is None:
         return None
     if abs(v["charge_now_uah"] - t["last_charge_uah"]) > allowed_delta_uah(t["design_uah"], dt):
@@ -117,7 +119,7 @@ def occupancy_change(t, v, dt):
     return None
 
 
-def guess_identity(prev_t, v):
+def guess_identity(prev_t, v, design_uah=None):
     """'same' only when the reading is within 3% of where the previous
     occupant left off and charge_full is unchanged; otherwise 'unsure'. Never
     'different': a pack charged off-machine looks different and is not."""
@@ -125,7 +127,10 @@ def guess_identity(prev_t, v):
         return "unsure"
     if v.get("charge_full_uah") != prev_t.get("last_charge_full_uah"):
         return "unsure"
-    if abs(v["charge_now_uah"] - prev_t["last_charge_uah"]) <= prev_t["design_uah"] * SAME_GUESS_PCT / 100.0:
+    design_uah = design_uah or prev_t.get("design_uah")
+    if not design_uah:
+        return "unsure"   # no yardstick to compare against
+    if abs(v["charge_now_uah"] - prev_t["last_charge_uah"]) <= design_uah * SAME_GUESS_PCT / 100.0:
         return "same"
     return "unsure"
 
@@ -143,9 +148,10 @@ def observe(state, slot, v, s, dt):
     if reason:
         prev = close_tenure(state, slot, s["ts"]) if t is not None else last_closed_tenure(state, slot)
         t = new_tenure(state, slot, v, s["ts"])
-        g = guess_identity(prev, v)
+        g = guess_identity(prev, v, t["design_uah"])
         delta = None
-        if prev and prev.get("last_charge_uah") is not None and v.get("charge_now_uah") is not None:
+        if (t["design_uah"] and prev and prev.get("last_charge_uah") is not None
+                and v.get("charge_now_uah") is not None):
             delta = (v["charge_now_uah"] - prev["last_charge_uah"]) / t["design_uah"] * 100.0
         state.setdefault("pending", {})[slot] = {
             "tenure_id": t["id"], "guess": g, "reason": reason,
@@ -156,6 +162,8 @@ def observe(state, slot, v, s, dt):
         changed = True
     else:
         changed = False
+    if not t.get("design_uah") and v.get("charge_full_design_uah"):
+        t["design_uah"] = v["charge_full_design_uah"]   # self-heal once a good reading arrives
     t["last_charge_uah"] = v["charge_now_uah"]
     t["last_charge_full_uah"] = v["charge_full_uah"]
     t["last_capacity"] = v["capacity"]
@@ -260,8 +268,9 @@ def rename_pack(state, old, new):
 def retire_pack(state, name):
     if name not in state["packs"]:
         raise RegistryError(f"unknown pack {name}")
-    if name in packs_in_slots(state):
-        raise RegistryError(f"pack {name} is in {packs_in_slots(state)[name]}; remove it first")
+    slots = packs_in_slots(state)
+    if name in slots:
+        raise RegistryError(f"pack {name} is in {slots[name]}; remove it first")
     state["packs"][name]["retired"] = True
     add_event(state, "pack", f"retired {name}")
 
