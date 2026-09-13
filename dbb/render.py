@@ -13,7 +13,7 @@
 
 import time
 
-from dbb import policy, registry
+from dbb import VERSION, policy, registry
 from dbb.config import profile_type
 from dbb.sysfs import BATS, read_applied
 from dbb.state import STATE_FILE, now_iso
@@ -24,6 +24,15 @@ def wh(uah, uv):
     if not uah or not uv:
         return 0.0
     return (uah / 1e6) * (uv / 1e6)
+
+
+def _power_w(v):
+    """Signed watts: negative while discharging. Dell reports current as a
+    magnitude, so the sign comes from the status string."""
+    if v["current_now_ua"] is None or v["voltage_now_uv"] is None:
+        return None
+    w = abs(v["current_now_ua"]) * v["voltage_now_uv"] / 1e12
+    return round(-w if v["status"] == "Discharging" else w, 2)
 
 
 def _revert_info(cfg, state, name, prof, now):
@@ -170,6 +179,7 @@ def state_json(state, s, cfg):
     bench_t = cfg["general"]["bench_temp_c"]
     out = {
         "ts": now_iso(),
+        "version": VERSION,
         "ac_online": s["ac_online"],
         "bats": {},
         "sessions": state.get("sessions", 0),
@@ -201,6 +211,12 @@ def state_json(state, s, cfg):
             "mean_soc": None,
             "pct_ge90": None,
             "discharged_wh": None,
+            "power_w": _power_w(v),
+            "voltage_v": (round(v["voltage_now_uv"] / 1e6, 2)
+                          if v["voltage_now_uv"] is not None else None),
+            "health_pct": (round(100.0 * v["charge_full_uah"] / v["charge_full_design_uah"], 1)
+                           if v["charge_full_uah"] and v["charge_full_design_uah"] else None),
+            "in_slot_hours": round((now - t["start_ts"]) / 3600.0, 1) if t and t["start_ts"] is not None else None,
         }
         entry["pack"] = t["pack"] if t else None
         entry["tenure_id"] = t["id"] if t else None

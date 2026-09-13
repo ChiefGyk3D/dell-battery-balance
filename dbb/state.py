@@ -38,7 +38,7 @@ def new_state():
     return {
         "version": 2, "created": now_iso(),
         "packs": {}, "tenures": [], "slots": {b: None for b in BATS}, "pending": {},
-        "next_tenure_id": 1, "last": None,
+        "next_tenure_id": 1, "next_event_id": 1, "last": None,
         "discharge_first": {b: 0 for b in BATS}, "sessions": 0, "policy": None,
         "ac_run_start_ts": None, "profile_switched_ts": None,
         "one_off_revert_hours": None, "firmware": {}, "events": [],
@@ -47,8 +47,22 @@ def new_state():
 
 
 def add_event(state, kind, detail):
-    state.setdefault("events", []).append({"ts": now_iso(), "kind": kind, "detail": detail})
+    # Ids are monotonic and never reused, so the applet can notify once per
+    # event with a single high-water mark even after the list is trimmed.
+    eid = state.get("next_event_id", 1)
+    state.setdefault("events", []).append(
+        {"id": eid, "ts": now_iso(), "kind": kind, "detail": detail})
+    state["next_event_id"] = eid + 1
     del state["events"][:-500]
+
+
+def _number_events(state):
+    """Events gained ids in 0.3. Number any older ones once, in order."""
+    evs = state.get("events", [])
+    if any("id" not in e for e in evs):
+        for i, e in enumerate(evs, 1):
+            e["id"] = i
+        state["next_event_id"] = len(evs) + 1
 
 
 def load_state():
@@ -71,6 +85,7 @@ def load_state():
         base = new_state()
         for k, v in base.items():
             state.setdefault(k, v)
+        _number_events(state)
         return state
     return new_state()
 

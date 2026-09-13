@@ -265,6 +265,31 @@ class ConfigCmd(CliBase):
         self.assertEqual(j["profile"]["name"], "daily")
 
 
+class StatusDetail(CliBase):
+    def test_json_has_the_detail_fields(self):
+        # 1.5 A at 11.4 V discharging -> -17.1 W; BAT0 is Full at 0 A -> 0.0 W
+        self.fs.bat("BAT1", capacity=60, charge_now=2760000, status="Discharging",
+                    current_now=1500000)
+        self.run_cli("sample")
+        j = self.status()
+        b1, b0 = j["bats"]["BAT1"], j["bats"]["BAT0"]
+        self.assertAlmostEqual(b1["power_w"], -17.1, places=2)
+        self.assertAlmostEqual(b0["power_w"], 0.0, places=2)
+        self.assertAlmostEqual(b1["voltage_v"], 11.4, places=2)
+        self.assertAlmostEqual(b0["health_pct"], 100.0, places=1)
+        self.assertIsNotNone(b0["in_slot_hours"])
+        self.assertGreaterEqual(b0["in_slot_hours"], 0.0)
+        self.assertEqual(j["version"], self.cli.VERSION)
+
+    def test_events_carry_ids(self):
+        self.run_cli("profile", "set", "travel")
+        j = self.status()
+        self.assertTrue(j["events"])
+        last = j["events"][-1]
+        self.assertEqual(last["kind"], "profile")
+        self.assertIsInstance(last["id"], int)
+
+
 class PolkitClass(CliBase):
     def test_control_class_refuses_configure_commands(self):
         code, _, err = self.run_cli("--polkit-class", "control", "config", "set", "general.deadband_efc=0.1")
