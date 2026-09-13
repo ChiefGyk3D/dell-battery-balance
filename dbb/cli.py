@@ -11,11 +11,9 @@
 #
 """Command-line surface. Every command reads config, state and a sample the same way."""
 import argparse
-import copy
 import json
 import sys
 import time
-import tomllib
 from pathlib import Path
 
 from dbb import VERSION, apply as apply_mod, config as cfg_mod, policy, render
@@ -42,36 +40,10 @@ def parse_duration(text):
     return float(t[:-1]) * units[t[-1]]
 
 
-def _deep_merge(base, patch):
-    """A copy of base with patch's tables merged in (recursively), scalars overwritten."""
-    out = copy.deepcopy(base)
-
-    def merge(dst, src):
-        for k, v in src.items():
-            if isinstance(v, dict) and isinstance(dst.get(k), dict):
-                merge(dst[k], v)
-            else:
-                dst[k] = v
-
-    merge(out, patch)
-    return out
-
-
 def load_config_or_snapshot(state):
-    """Read the on-disk config as a delta over the defaults, so a file that
-    only overrides one setting still validates on the fields it actually
-    touches -- a strict, full-schema load would instead fail on unrelated
-    keys the file never mentioned, obscuring the real error."""
-    cfg_mod.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        if cfg_mod.CONFIG_FILE.exists():
-            with cfg_mod.CONFIG_FILE.open("rb") as fh:
-                raw = tomllib.load(fh)
-            cfg = _deep_merge(cfg_mod.default_config(), raw)
-        else:
-            cfg = cfg_mod.default_config()
-        cfg_mod.validate(cfg)
-    except (OSError, tomllib.TOMLDecodeError, cfg_mod.ConfigError) as e:
+        cfg = cfg_mod.load()
+    except cfg_mod.ConfigError as e:
         state["config_error"] = str(e)
         if state.get("config_snapshot"):
             return state["config_snapshot"]
@@ -215,7 +187,12 @@ def cmd_profile_set(args):
     state, cfg, _ = _view()
     if args.name not in cfg["profiles"]:
         die(f"error: no profile {args.name!r}")
-    hours = parse_duration(args.for_) if args.for_ else None
+    hours = None
+    if args.for_:
+        try:
+            hours = parse_duration(args.for_)
+        except ValueError as e:
+            die(f"error: {e}")
     sys.exit(_switch_and_apply(cfg, state, args.name, "cli", hours))
 
 
@@ -291,17 +268,14 @@ def cmd_config_validate(args):
 
 
 def cmd_config_apply(args):
-    # A patch file need not repeat every general/profile key: merge it onto
-    # the live config so validate() reports the field that is actually wrong,
-    # not unrelated keys the patch never mentioned.
-    state, cfg, _ = _view()
+    # The applied file replaces the whole config -- same strict, full-schema
+    # semantics as config.load()/config validate, not a partial overlay.
+    state = load_state()
     try:
-        with open(args.path, "rb") as fh:
-            patch = tomllib.load(fh)
-    except (OSError, tomllib.TOMLDecodeError) as e:
-        die(f"error: {args.path}: {e}")
-    merged = _deep_merge(cfg, patch)
-    _save_config(merged, state, "config apply")
+        cfg = cfg_mod.load(args.path)
+    except cfg_mod.ConfigError as e:
+        die(f"error: {e}")
+    _save_config(cfg, state, "config apply")
     add_event(state, "config", f"applied from {Path(args.path).name}")
     save_state(state)
     print("ok")

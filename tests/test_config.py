@@ -124,7 +124,8 @@ class LoadSave(unittest.TestCase):
             config.save(cfg, p)
             self.assertTrue(os.path.exists(p + ".bak"))
             self.assertEqual(config.load(p)["general"]["deadband_efc"], 0.7)
-            self.assertEqual(tomllib.load(open(p + ".bak", "rb"))["general"]["deadband_efc"], 0.5)
+            with open(p + ".bak", "rb") as fh:
+                self.assertEqual(tomllib.load(fh)["general"]["deadband_efc"], 0.5)
             cfg["general"]["deadband_efc"] = -1
             with self.assertRaises(config.ConfigError):
                 config.save(cfg, p)
@@ -133,7 +134,8 @@ class LoadSave(unittest.TestCase):
     def test_load_bad_toml_raises_configerror(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "config.toml")
-            open(p, "w").write("[general\nbroken")
+            with open(p, "w") as fh:
+                fh.write("[general\nbroken")
             with self.assertRaises(config.ConfigError):
                 config.load(p)
 

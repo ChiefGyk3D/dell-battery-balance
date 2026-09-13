@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 class CliBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self._mode_restore = []
         os.environ["DBB_SYSFS_ROOT"] = os.path.join(self.tmp.name, "sys")
         os.environ["DBB_STATE_DIR"] = os.path.join(self.tmp.name, "state")
         os.environ["DBB_CONFIG_DIR"] = os.path.join(self.tmp.name, "etc")
@@ -14,8 +15,8 @@ class CliBase(unittest.TestCase):
             if m.startswith("dbb") or m == "tests.fakesys":
                 del sys.modules[m]
         from tests.fakesys import FakeSys
-        from dbb import cli, sysfs
-        self.cli, self.sysfs = cli, sysfs
+        from dbb import cli, sysfs, config as dbb_config
+        self.cli, self.sysfs, self.config = cli, sysfs, dbb_config
         self.fs = FakeSys(os.environ["DBB_SYSFS_ROOT"])
         self.fs.bat("BAT0", charge_types="Trickle Fast Standard [Adaptive] Custom", start=50, stop=90, capacity=100, charge_now=4600000, status="Full")
         self.fs.bat("BAT1", capacity=60, charge_now=2760000, status="Charging")
@@ -26,6 +27,11 @@ class CliBase(unittest.TestCase):
             self.fs.sysman_attr(b, "90", possible=None)
 
     def tearDown(self):
+        for d in self._mode_restore:
+            try:
+                os.chmod(d, 0o755)
+            except OSError:
+                pass
         self.tmp.cleanup()
         for k in ("DBB_SYSFS_ROOT", "DBB_STATE_DIR", "DBB_CONFIG_DIR", "DBB_BOOT_ID"):
             os.environ.pop(k, None)
@@ -45,6 +51,24 @@ class CliBase(unittest.TestCase):
         self.assertEqual(code, 0)
         return json.loads(out)
 
+    def _write_config_file(self, text):
+        """Write a full replacement config.toml, creating the config dir
+        first -- nothing in the CLI proactively creates it on a read."""
+        p = os.path.join(os.environ["DBB_CONFIG_DIR"], "config.toml")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as fh:
+            fh.write(text)
+        return p
+
+    def _reimport_cli(self):
+        """Purge and re-import dbb.* so module-level path constants (e.g.
+        config.CONFIG_DIR) re-resolve against whatever env vars are set now."""
+        for m in list(sys.modules):
+            if m.startswith("dbb"):
+                del sys.modules[m]
+        from dbb import cli
+        self.cli = cli
+
 
 class Tick(CliBase):
     def test_tick_applies_active_profile(self):
@@ -61,14 +85,40 @@ class Tick(CliBase):
         self.assertEqual(self.fs.read("class/firmware-attributes/dell-wmi-sysman/attributes/SliceBattCustomChargeStop/current_value"), "90")
 
     def test_bad_config_uses_snapshot_and_reports(self):
-        self.run_cli("tick")
-        p = os.path.join(os.environ["DBB_CONFIG_DIR"], "config.toml")
-        open(p, "w").write("[general]\nactive_profile = 'nope'\n")
+        code, _, err = self.run_cli("tick")
+        self.assertEqual(code, 0, err)
+        # A full config (strict schema) with only the active_profile value
+        # broken -- so validate() names the actual offending key ("nope"),
+        # not an unrelated key the file happens not to mention.
+        text = self.config.emit(self.config.default_config()).replace(
+            'active_profile = "daily"', 'active_profile = "nope"')
+        self._write_config_file(text)
         code, _, _ = self.run_cli("tick")
         self.assertEqual(code, 0)
         j = self.status()
         self.assertIn("nope", j["config_error"])
         self.assertEqual(j["profile"]["name"], "daily")
+
+    def test_truncated_config_is_reported_not_defaulted(self):
+        code, _, err = self.run_cli("tick")
+        self.assertEqual(code, 0, err)
+        before = self.status()["profile"]["name"]
+        # No [general] table at all -- strict load must surface this as an
+        # error, not silently fall back to defaults for the missing table.
+        self._write_config_file(
+            '[profiles.daily]\n'
+            'label = "Daily"\n'
+            'balancing = true\n'
+            'bands.neutral = [50, 80]\n'
+            'bands.protect = [50, 60]\n'
+            'bands.work = [80, 90]\n'
+        )
+        code, _, _ = self.run_cli("tick")
+        self.assertEqual(code, 0)
+        j = self.status()
+        self.assertIsNotNone(j["config_error"])
+        self.assertIn("general", j["config_error"])
+        self.assertEqual(j["profile"]["name"], before)
 
 
 class Profiles(CliBase):
@@ -92,6 +142,11 @@ class Profiles(CliBase):
         self.run_cli("profile", "set", "field", "--for", "8h")
         j = self.status()
         self.assertAlmostEqual(j["revert"]["after_hours_left"], 8.0, places=1)
+
+    def test_set_with_bad_duration_rejected(self):
+        code, _, err = self.run_cli("profile", "set", "field", "--for", "soon")
+        self.assertNotEqual(code, 0)
+        self.assertIn("duration", err)
 
     def test_create_edit_delete(self):
         code, _, err = self.run_cli("profile", "create", "demo", "--from", "daily")
@@ -124,11 +179,28 @@ class ConfigCmd(CliBase):
         self.assertEqual(out.strip(), "0.3")
 
     def test_apply_validates(self):
+        # A full config (strict schema) with only deadband_efc broken -- the
+        # applied file replaces the whole config, so it must be complete.
+        text = self.config.emit(self.config.default_config()).replace(
+            "deadband_efc = 0.5", "deadband_efc = -3")
         p = os.path.join(self.tmp.name, "new.toml")
-        open(p, "w").write("[general]\ndeadband_efc = -3\n")
+        with open(p, "w") as fh:
+            fh.write(text)
         code, _, err = self.run_cli("config", "apply", p)
         self.assertNotEqual(code, 0)
         self.assertIn("deadband_efc", err)
+
+    def test_status_ok_when_config_dir_parent_is_read_only(self):
+        ro = os.path.join(self.tmp.name, "ro")
+        os.makedirs(ro)
+        os.chmod(ro, 0o555)
+        self._mode_restore.append(ro)
+        os.environ["DBB_CONFIG_DIR"] = os.path.join(ro, "missing")
+        self._reimport_cli()
+        code, out, err = self.run_cli("status", "--json")
+        self.assertEqual(code, 0, err)
+        j = json.loads(out)
+        self.assertEqual(j["profile"]["name"], "daily")
 
 
 class PolkitClass(CliBase):
