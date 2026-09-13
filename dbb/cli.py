@@ -16,7 +16,7 @@ import json
 import os
 import sys
 
-from dbb.policy import DEFAULT_BANDS, DEFAULT_DEADBAND, decide_roles
+from dbb import config, policy
 from dbb.render import fmt_status, state_json
 from dbb.state import append_log, load_state, now_iso, save_state
 from dbb.sysfs import BATS, PS, apply_band, read_applied, sample_all
@@ -26,6 +26,15 @@ from dbb.wear import integrate
 def require_root(action):
     if os.geteuid() != 0:
         sys.exit(f"error: {action} needs root (sysfs battery controls are root-only)")
+
+
+def load_cfg():
+    """Load the on-disk config; fall back to defaults if it is invalid."""
+    try:
+        return config.load()
+    except config.ConfigError as e:
+        print(f"warning: {e}; using defaults", file=sys.stderr)
+        return config.default_config()
 
 
 # --------------------------------------------------------------------------
@@ -47,16 +56,18 @@ def cmd_sample(args):
 
 def cmd_status(args):
     state, s = load_state(), sample_all()
+    cfg = load_cfg()
     if args.json:
-        print(json.dumps(state_json(state, s), indent=2, sort_keys=True))
+        print(json.dumps(state_json(state, s, cfg), indent=2, sort_keys=True))
     else:
-        print(fmt_status(state, s))
+        print(fmt_status(state, s, cfg))
 
 
 def cmd_report(args):
     state = load_state()
     s = sample_all()
-    print(fmt_status(state, s))
+    cfg = load_cfg()
+    print(fmt_status(state, s, cfg))
     print()
     print("firmware charge configuration:")
     for b in BATS:
@@ -66,25 +77,30 @@ def cmd_report(args):
             continue
         print(f"  {b}: " + "  ".join(f"{k}={v}" for k, v in applied.items() if v))
     print()
-    roles, why = decide_roles(state, args.deadband)
+    deadband = args.deadband if args.deadband is not None else cfg["general"]["deadband_efc"]
+    roles, why = policy.decide_roles(policy.efc_by_slot(state), deadband)
     print(f"recommendation: {why}")
     if roles:
+        bands = policy.bands_for(cfg, cfg["general"]["active_profile"])
         for b, r in roles.items():
-            st, sp = DEFAULT_BANDS[r]
+            st, sp = bands.get(r, bands.get("all", (50, 80)))
             print(f"  {b}: {r}  -> charge {st}/{sp}")
 
 
 def cmd_balance(args):
     state = load_state()
-    roles, why = decide_roles(state, args.deadband)
+    cfg = load_cfg()
+    deadband = args.deadband if args.deadband is not None else cfg["general"]["deadband_efc"]
+    roles, why = policy.decide_roles(policy.efc_by_slot(state), deadband)
     print(why)
     if not roles:
         return
     if args.apply:
         require_root("applying charge ceilings")
+    bands = policy.bands_for(cfg, cfg["general"]["active_profile"])
     failures = []
     for b, r in roles.items():
-        st, sp = DEFAULT_BANDS[r]
+        st, sp = bands.get(r, bands.get("all", (50, 80)))
         msg, err = apply_band(b, st, sp, args.bios_password, dry_run=not args.apply)
         print(f"  {err if err else msg}")
         if err:
@@ -98,7 +114,8 @@ def cmd_balance(args):
 
 def cmd_field(args):
     require_root("lifting charge ceilings")
-    st, sp = DEFAULT_BANDS["field"]
+    cfg = load_cfg()
+    st, sp = policy.bands_for(cfg, "field")["all"]
     state = load_state()
     failures = []
     for b in BATS:
@@ -139,9 +156,9 @@ def main():
     p = argparse.ArgumentParser(
         prog="dell-battery-balance",
         description="Track and equalize wear across a Dell Rugged's two packs.")
-    p.add_argument("--deadband", type=float, default=DEFAULT_DEADBAND,
+    p.add_argument("--deadband", type=float, default=None,
                    help="EFC divergence required before roles flip "
-                        f"(default {DEFAULT_DEADBAND})")
+                        "(default: general.deadband_efc from config)")
     p.add_argument("--bios-password", default=os.environ.get("DBB_BIOS_PASSWORD"),
                    help="BIOS admin password, if one is set "
                         "(or set DBB_BIOS_PASSWORD)")

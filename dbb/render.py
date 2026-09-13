@@ -11,7 +11,7 @@
 #
 """Human-readable and JSON status views over persisted state and a live sample."""
 
-from dbb.policy import DEFAULT_BANDS, DEFAULT_DEADBAND, decide_roles
+from dbb import policy
 from dbb.sysfs import BATS, read_applied
 from dbb.state import STATE_FILE, now_iso
 from dbb.wear import efc
@@ -23,13 +23,16 @@ def wh(uah, uv):
     return (uah / 1e6) * (uv / 1e6)
 
 
-def fmt_status(state, s):
+def fmt_status(state, s, cfg):
     slots = state.get("slots", {})
     lines = []
     lines.append(f"dell-battery-balance   {now_iso()}")
     lines.append(f"state: {STATE_FILE}")
     ac = "AC connected" if s["ac_online"] else "on battery"
     lines.append(f"power: {ac}")
+    name = cfg["general"]["active_profile"]
+    profile = cfg["profiles"][name]
+    lines.append(f"profile: {profile['label']} ({name}, {policy.profile_type(profile)})")
     lines.append("")
 
     hdr = f"{'':6} {'now':>16} {'EFC':>7} {'discharged':>12} {'cal.score':>10} {'mean SoC':>9} {'>=90%':>8}"
@@ -81,7 +84,7 @@ def fmt_status(state, s):
     return "\n".join(lines)
 
 
-def state_json(state, s):
+def state_json(state, s, cfg):
     """Machine-readable view of everything `status` prints, for the applet."""
     slots = state.get("slots", {})
     out = {
@@ -140,10 +143,16 @@ def state_json(state, s):
         out["divergence_efc"] = None
         out["divergence_calendar"] = None
 
-    roles, why = decide_roles(state, DEFAULT_DEADBAND)
+    name = cfg["general"]["active_profile"]
+    out["profile"] = {"name": name, "label": cfg["profiles"][name]["label"],
+                       "type": policy.profile_type(cfg["profiles"][name])}
+
+    roles, why = policy.decide_roles(policy.efc_by_slot(state), cfg["general"]["deadband_efc"])
+    bands_map = cfg["profiles"][name]["bands"]
     out["recommendation"] = {
         "why": why,
         "roles": roles,
-        "bands": {b: DEFAULT_BANDS[r] for b, r in (roles or {}).items()},
+        "bands": {b: tuple(bands_map.get(r, bands_map.get("all", (50, 80))))
+                  for b, r in (roles or {}).items()},
     }
     return out

@@ -56,7 +56,7 @@ class WearModelTests(unittest.TestCase):
             st["discharge_first"]["BAT1"], st["discharge_first"]["BAT0"],
             "BAT1 should be credited as draining first")
 
-        roles, _why = policy.decide_roles(st, 0.5)
+        roles, _why = policy.decide_roles(policy.efc_by_slot(st), 0.5)
         self.assertEqual(roles["BAT1"], "protect", "worn pack must be protected")
         self.assertEqual(roles["BAT0"], "work")
 
@@ -65,7 +65,7 @@ class WearModelTests(unittest.TestCase):
         st = {"slots": {"BAT0": wear.blank_slot(DESIGN), "BAT1": wear.blank_slot(DESIGN)}}
         st["slots"]["BAT0"]["discharge_uah"] = DESIGN * 2.0
         st["slots"]["BAT1"]["discharge_uah"] = DESIGN * 2.2
-        roles, _why = policy.decide_roles(st, 0.5)
+        roles, _why = policy.decide_roles(policy.efc_by_slot(st), 0.5)
         self.assertEqual(set(roles.values()), {"neutral"})
 
     def test_clamp_band_respects_limits(self):
