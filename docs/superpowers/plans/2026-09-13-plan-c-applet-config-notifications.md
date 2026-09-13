@@ -1934,6 +1934,523 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ---
 
+### Task 10: Profile shortcut, full revert control, sudo-safe files, documented command surface
+
+*(Added mid-execution, after Task 2, at the user's request: `sudo dell-battery-balance profile field` answered with argparse's "invalid choice"; the field profile's auto-revert must be tweakable and disable-able with the reasons documented; and tests must keep the documented command surface honest so this cannot recur. Executed right after Task 2, before the applet tasks.)*
+
+**Files:**
+- Modify: `dbb/cli.py` (`expand_profile_shortcut`, `_one_off_hours`, `_require_profile`, `cmd_profile_set/show/edit/delete`, `cmd_field`, parser, `main`), `dbb/policy.py` (`revert_due`), `dbb/render.py` (`_revert_info`, `fmt_status` revert line), `dbb/config.py` (`set_dotted`, `save`), `dbb/state.py` (`save_state`, `append_log` modes), `install.sh` (state dir mode), `plasmoid/package/contents/ui/FullRepresentation.qml` (footer revert label), `README.md`, spec §4
+- Create: `tests/test_cli_surface.py`
+- Test: `tests/test_cli.py` (class `Profiles`, class `ConfigCmd`), `tests/test_policy.py`
+
+**Interfaces:**
+- Produces: `cli.expand_profile_shortcut(argv: list[str]) -> list[str]` (pure; `profile <name>` → `profile set <name>` at the command position only); `cli.PROFILE_SUBCOMMANDS`; `profile set <name> [--for D | --stay]`, `field [--for D | --stay]`; `state["one_off_revert_hours"]` semantics: `None` = use the profile's own `[revert]`, `0.0` = `--stay` (no automatic revert this switch), `> 0` = revert after that many hours *replacing* the profile's triggers; `status --json` `revert` gains `"stay": bool`; `config.set_dotted` accepts `profiles.X.revert=none` and `profiles.X.revert.after_hours|on_ac_hours=none|0`.
+- Consumes: nothing from Tasks 3–9. Task 4 later edits other regions of `FullRepresentation.qml`.
+
+- [ ] **Step 1: Failing tests.** Append inside class `Profiles` in `tests/test_cli.py`:
+
+```python
+    def test_profile_shortcut_is_profile_set(self):
+        code, _, err = self.run_cli("profile", "field")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.status()["profile"]["name"], "field")
+
+    def test_profile_shortcut_survives_the_wrapper_prefix(self):
+        code, _, err = self.run_cli("--polkit-class", "control", "--", "profile", "travel")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.status()["profile"]["name"], "travel")
+
+    def test_profile_shortcut_leaves_later_positionals_alone(self):
+        # a pack literally named "profile" must not be rewritten into "profile set"
+        code, _, err = self.run_cli("pack", "rename", "profile", "x")
+        self.assertNotEqual(code, 0)
+        self.assertNotIn("invalid choice", err)
+        self.assertNotIn("usage:", err)
+
+    def test_unknown_profile_lists_the_choices(self):
+        code, _, err = self.run_cli("profile", "nosuch")
+        self.assertNotEqual(code, 0)
+        self.assertIn("daily", err)
+        self.assertIn("field", err)
+        self.assertNotIn("invalid choice", err)
+
+    def test_for_longer_than_the_profile_after_hours_is_honoured(self):
+        # issue #1: --for is an override of the profile's triggers, not a floor
+        self.run_cli("profile", "set", "field", "--for", "96h")
+        j = self.status()
+        self.assertAlmostEqual(j["revert"]["after_hours_left"], 96.0, places=1)
+        self.assertIsNone(j["revert"]["on_ac_hours_left"])
+        self.assertFalse(j["revert"]["stay"])
+
+    def test_stay_disables_revert_for_this_switch(self):
+        code, _, err = self.run_cli("profile", "set", "field", "--stay")
+        self.assertEqual(code, 0, err)
+        j = self.status()
+        self.assertTrue(j["revert"]["stay"])
+        self.assertIsNone(j["revert"]["after_hours_left"])
+        self.assertIsNone(j["revert"]["on_ac_hours_left"])
+        code, out, _ = self.run_cli("status")
+        self.assertIn("stays on field", out)
+
+    def test_for_and_stay_are_exclusive(self):
+        code, _, err = self.run_cli("profile", "set", "field", "--for", "8h", "--stay")
+        self.assertNotEqual(code, 0)
+
+    def test_field_alias_takes_for_and_stay(self):
+        self.run_cli("field", "--stay")
+        self.assertTrue(self.status()["revert"]["stay"])
+        self.run_cli("restore")
+        self.run_cli("field", "--for", "3d")
+        self.assertAlmostEqual(self.status()["revert"]["after_hours_left"], 72.0, places=1)
+
+    def test_revert_none_removes_the_table(self):
+        code, _, err = self.run_cli("profile", "edit", "field", "revert=none")
+        self.assertEqual(code, 0, err)
+        code, out, _ = self.run_cli("profile", "show", "field")
+        self.assertNotIn("revert.", out)
+        self.run_cli("profile", "set", "field")
+        self.assertIsNone(self.status()["revert"])
+
+    def test_dropping_the_last_trigger_drops_the_table(self):
+        code, _, err = self.run_cli("profile", "edit", "field", "revert.on_ac_hours=none")
+        self.assertEqual(code, 0, err)
+        code, out, _ = self.run_cli("profile", "show", "field")
+        self.assertIn("revert.after_hours = 72", out)
+        self.assertNotIn("on_ac_hours", out)
+        code, _, err = self.run_cli("profile", "edit", "field", "revert.after_hours=0")
+        self.assertEqual(code, 0, err)
+        code, out, _ = self.run_cli("profile", "show", "field")
+        self.assertNotIn("revert.", out)
+
+    def test_trigger_can_be_added_to_a_profile_without_revert(self):
+        code, _, err = self.run_cli("profile", "edit", "travel", "revert.after_hours=24")
+        self.assertEqual(code, 0, err)
+        code, out, _ = self.run_cli("profile", "show", "travel")
+        self.assertIn("revert.after_hours = 24", out)
+        self.run_cli("profile", "set", "travel")
+        self.assertAlmostEqual(self.status()["revert"]["after_hours_left"], 24.0, places=1)
+```
+
+Append inside class `ConfigCmd`:
+
+```python
+    def test_backup_is_replaced_not_rewritten(self):
+        # A .bak left root-owned by a stray `sudo` run must not lock the
+        # service account out: the backup is renamed into place, never
+        # opened for writing.
+        self.run_cli("config", "set", "general.deadband_efc=0.3")
+        self.run_cli("config", "set", "general.deadband_efc=0.35")
+        bak = os.path.join(os.environ["DBB_CONFIG_DIR"], "config.toml.bak")
+        self.assertTrue(os.path.exists(bak))
+        os.chmod(bak, 0o444)
+        code, _, err = self.run_cli("config", "set", "general.deadband_efc=0.4")
+        self.assertEqual(code, 0, err)
+        with open(bak) as fh:
+            self.assertIn("deadband_efc = 0.35", fh.read())
+
+    def test_state_and_sample_log_are_group_writable(self):
+        self.run_cli("sample")
+        sd = os.environ["DBB_STATE_DIR"]
+        self.assertEqual(os.stat(os.path.join(sd, "state.json")).st_mode & 0o777, 0o664)
+        logs = [f for f in os.listdir(sd) if f.startswith("samples-")]
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(os.stat(os.path.join(sd, logs[0])).st_mode & 0o777, 0o664)
+```
+
+Append to `tests/test_policy.py` (check its imports/harness first and match them; the assertions are what matter):
+
+```python
+class OneOffRevert(unittest.TestCase):
+    def setUp(self):
+        for m in list(sys.modules):
+            if m.startswith("dbb"):
+                del sys.modules[m]
+        from dbb import policy, config
+        self.policy = policy
+        self.field = config.default_config()["profiles"]["field"]   # after 72 h, on AC 12 h
+
+    def test_for_replaces_both_profile_triggers(self):
+        st = {"profile_switched_ts": 0.0, "one_off_revert_hours": 96.0, "ac_run_start_ts": 0.0}
+        self.assertIsNone(self.policy.revert_due(self.field, st, 80 * 3600))    # profile's 72 h / 12 h AC do NOT fire
+        self.assertEqual(self.policy.revert_due(self.field, st, 97 * 3600), "after_hours")
+
+    def test_stay_never_reverts(self):
+        st = {"profile_switched_ts": 0.0, "one_off_revert_hours": 0.0, "ac_run_start_ts": 0.0}
+        self.assertIsNone(self.policy.revert_due(self.field, st, 1000 * 3600))
+
+    def test_profile_triggers_apply_when_no_one_off(self):
+        st = {"profile_switched_ts": 0.0, "one_off_revert_hours": None, "ac_run_start_ts": None}
+        self.assertEqual(self.policy.revert_due(self.field, st, 73 * 3600), "after_hours")
+        st["ac_run_start_ts"] = 0.0
+        self.assertEqual(self.policy.revert_due(self.field, st, 13 * 3600), "on_ac_hours")
+```
+
+Create `tests/test_cli_surface.py` — the guard that keeps the documented surface and the parser in step:
+
+```python
+"""Every command the README documents must parse, and every command the
+parser knows must be documented. This is what makes `profile field`-style
+surprises a test failure instead of a bug report."""
+import argparse
+import os
+import re
+import sys
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
+
+README = os.path.join(os.path.dirname(__file__), os.pardir, "README.md")
+
+# One entry per documented form, placeholders filled with plausible values.
+DOCUMENTED = [
+    ["tick"], ["sample"], ["status"], ["status", "--json"], ["report"],
+    ["balance"], ["balance", "--apply"],
+    ["profile", "list"], ["profile", "show", "daily"],
+    ["profile", "set", "field"], ["profile", "set", "field", "--for", "8h"],
+    ["profile", "set", "field", "--stay"], ["profile", "field"],
+    ["profile", "create", "trip", "--from", "travel"],
+    ["profile", "edit", "field", "revert.after_hours=120"], ["profile", "edit", "field", "revert=none"],
+    ["profile", "delete", "trip"],
+    ["config", "get"], ["config", "get", "general.deadband_efc"], ["config", "get", "--json"],
+    ["config", "set", "general.deadband_efc=0.4"],
+    ["config", "validate", "x.toml"], ["config", "validate", "--json", "x.json"],
+    ["config", "apply", "x.toml"], ["config", "apply", "--json", "x.json"],
+    ["field"], ["field", "--for", "3d"], ["field", "--stay"], ["restore"],
+    ["pack", "list"], ["pack", "assign", "BAT0", "A"], ["pack", "new", "BAT0", "A"],
+    ["pack", "same", "BAT0"], ["pack", "reassign", "3", "A"], ["pack", "rename", "A", "B"],
+    ["pack", "retire", "A"], ["pack", "unretire", "A"],
+    ["reset", "--slot", "BAT0"], ["reset", "--pack", "A"], ["reset", "--all"],
+    ["--polkit-class", "control", "--", "profile", "field"],
+]
+
+ROW = re.compile(r"^\| `([^`]+)`")
+GROUPS = ("profile", "config", "pack")
+
+
+def _subparser_choices(parser):
+    for a in parser._actions:
+        if isinstance(a, argparse._SubParsersAction):
+            return a.choices
+    return {}
+
+
+def parser_commands(parser):
+    """{('tick',), ('profile', 'set'), ...} straight from argparse."""
+    out = set()
+    for name, sub in _subparser_choices(parser).items():
+        inner = _subparser_choices(sub)
+        if inner:
+            out.update((name, k) for k in inner)
+        else:
+            out.add((name,))
+    return out
+
+
+def readme_commands():
+    with open(README) as fh:
+        text = fh.read()
+    section = text.split("### CLI reference", 1)[1].split("\n## ", 1)[0]
+    out = set()
+    for line in section.splitlines():
+        m = ROW.match(line)
+        if not m:
+            continue
+        words = []
+        for w in m.group(1).split():
+            if w[0] in "<[-\\|" or "=" in w:
+                break
+            words.append(w)
+        out.add(tuple(words[:2]) if words[0] in GROUPS else (words[0],))
+    return out
+
+
+class CommandSurface(unittest.TestCase):
+    def setUp(self):
+        for m in list(sys.modules):
+            if m.startswith("dbb"):
+                del sys.modules[m]
+        from dbb import cli
+        self.cli = cli
+        self.parser = cli.build_parser()
+
+    def test_every_documented_form_parses(self):
+        for argv in DOCUMENTED:
+            with self.subTest(argv=" ".join(argv)):
+                try:
+                    self.parser.parse_args(self.cli.expand_profile_shortcut(argv))
+                except SystemExit as e:
+                    self.fail(f"{' '.join(argv)!r} does not parse (exit {e.code})")
+
+    def test_readme_table_matches_the_parser(self):
+        documented = readme_commands()
+        known = parser_commands(self.parser)
+        # `profile <name>` is the shortcut row; it is not a subparser
+        self.assertEqual(documented - known - {("profile",)}, set(),
+                         "README documents commands the parser does not have")
+        self.assertEqual(known - documented, set(),
+                         "parser has commands the README does not document")
+```
+
+- [ ] **Step 2: Run to verify failure** — `python3 -m unittest tests.test_cli.Profiles tests.test_cli.ConfigCmd tests.test_policy tests.test_cli_surface -v` → the shortcut/`--stay`/`revert=none` tests fail on argparse or `ConfigError`, the surface test fails on `expand_profile_shortcut` missing, the `.bak` test fails with `PermissionError`, the mode test with `0o644 != 0o664`.
+
+- [ ] **Step 3: Implement.**
+
+`dbb/cli.py` — near the top, after `CONFIGURE_CLASS`:
+
+```python
+PROFILE_SUBCOMMANDS = ("list", "show", "set", "create", "edit", "delete")
+
+
+def expand_profile_shortcut(argv):
+    """`profile <name>` means `profile set <name>`: it is the first thing
+    people type, and argparse's "invalid choice" reply taught nobody the
+    real spelling. Only the command position is rewritten (after the
+    wrappers' `--polkit-class X --` prefix), never a later positional, so a
+    pack or profile literally named "profile" is untouched."""
+    out = list(argv)
+    i = 0
+    while i < len(out):
+        tok = out[i]
+        if tok == "--":
+            i += 1
+            break
+        if tok == "--polkit-class":
+            i += 2
+            continue
+        if tok.startswith("--polkit-class="):
+            i += 1
+            continue
+        break
+    if (i + 1 < len(out) and out[i] == "profile"
+            and out[i + 1] not in PROFILE_SUBCOMMANDS
+            and not out[i + 1].startswith("-")):
+        out.insert(i + 1, "set")
+    return out
+
+
+def _one_off_hours(args):
+    """--stay -> 0.0 (no automatic revert this switch); --for -> hours;
+    neither -> None (the profile's own [revert] table applies)."""
+    if getattr(args, "stay", False):
+        return 0.0
+    if getattr(args, "for_", None):
+        try:
+            return parse_duration(args.for_)
+        except ValueError as e:
+            die(f"error: {e}")
+    return None
+
+
+def _require_profile(cfg, name):
+    if name not in cfg["profiles"]:
+        die(f"error: no profile {name!r}. Profiles: {', '.join(sorted(cfg['profiles']))}")
+```
+
+Replace `cmd_profile_set` and `cmd_field`:
+
+```python
+def cmd_profile_set(args):
+    state, cfg, _ = _view()
+    _require_profile(cfg, args.name)
+    sys.exit(_switch_and_apply(cfg, state, args.name, "cli", _one_off_hours(args)))
+
+
+def cmd_field(args):
+    state, cfg, _ = _view()
+    sys.exit(_switch_and_apply(cfg, state, "field", "cli", _one_off_hours(args)))
+```
+
+In `cmd_profile_show`, `cmd_profile_edit`, `cmd_profile_delete` replace the `if args.name not in cfg["profiles"]: die(...)` lines with `_require_profile(cfg, args.name)` (in `delete`, keep the `daily`/active checks before it).
+
+Parser: replace the `profile set` line and the `field` line:
+
+```python
+    sp = pr.add_parser("set"); sp.add_argument("name")
+    g = sp.add_mutually_exclusive_group()
+    g.add_argument("--for", dest="for_", metavar="DURATION",
+                   help="revert after this long (90m, 8h, 3d), replacing the profile's own triggers for this switch")
+    g.add_argument("--stay", action="store_true", help="no automatic revert for this switch")
+    sp.set_defaults(func=cmd_profile_set, cls="control")
+    ...
+    sp = sub.add_parser("field", help="alias: profile set field")
+    g = sp.add_mutually_exclusive_group()
+    g.add_argument("--for", dest="for_", metavar="DURATION")
+    g.add_argument("--stay", action="store_true")
+    sp.set_defaults(func=cmd_field, cls="control")
+```
+
+(Look at how `field` is currently registered and keep its `cls`.) In `main()`, change `args = build_parser().parse_args(argv)` to `args = build_parser().parse_args(expand_profile_shortcut(raw))`.
+
+`dbb/policy.py` — `revert_due` becomes:
+
+```python
+def revert_due(profile, state, now):
+    switched = state.get("profile_switched_ts")
+    one_off = state.get("one_off_revert_hours")
+    if one_off is not None:
+        # --for / --stay belong to the SWITCH, not the profile (spec §4): for
+        # this switch they REPLACE the profile's own triggers -- longer or
+        # shorter than after_hours -- and --stay (0) means no automatic
+        # revert at all. Issue #1 was this override acting as a floor.
+        if one_off > 0 and switched is not None and (now - switched) / 3600.0 >= one_off:
+            return "after_hours"
+        return None
+    rv = profile.get("revert")
+    if not rv:
+        return None
+    after = rv.get("after_hours")
+    if after and switched is not None and (now - switched) / 3600.0 >= after:
+        return "after_hours"
+    on_ac = rv.get("on_ac_hours")
+    run = state.get("ac_run_start_ts")
+    if on_ac and run is not None and (now - run) / 3600.0 >= on_ac:
+        return "on_ac_hours"
+    return None
+```
+
+`dbb/render.py` — `_revert_info` becomes:
+
+```python
+def _revert_info(cfg, state, name, prof, now):
+    rv = (prof or {}).get("revert") or {}
+    one_off = state.get("one_off_revert_hours")
+    if one_off is None and not rv:
+        return None
+    switched = state.get("profile_switched_ts")
+    run = state.get("ac_run_start_ts")
+    if one_off is not None:
+        # a --for / --stay switch replaces the profile's triggers (policy.revert_due)
+        after, on_ac, stay = (one_off or None), None, one_off == 0
+    else:
+        after, on_ac, stay = rv.get("after_hours"), rv.get("on_ac_hours"), False
+    return {
+        "to": policy.resolve_revert_target(cfg, name),
+        "stay": stay,
+        "after_hours_left": (after - (now - switched) / 3600.0) if (after and switched is not None) else None,
+        "on_ac_hours_left": (on_ac - (now - run) / 3600.0) if (on_ac and run is not None) else None,
+    }
+```
+
+In `fmt_status`, where the revert line is printed from this dict, print `f"revert: none - stays on {name} until you change it"` when `stay` is true (keep the existing countdown line otherwise).
+
+`dbb/config.py` — at the top of `set_dotted`:
+
+```python
+OFF_WORDS = ("none", "off", "false", "")
+
+
+def set_dotted(cfg, key, raw):
+    parts = key.split(".")
+    # Removing auto-revert is a first-class edit, not a validation trap:
+    #   profiles.X.revert=none                      drops the whole table
+    #   profiles.X.revert.after_hours=none (or 0)   drops that trigger; when no
+    #   trigger is left the table goes too, since a revert with no trigger is
+    #   meaningless (validate() rejects it).
+    word = raw.strip().lower()
+    if len(parts) == 3 and parts[0] == "profiles" and parts[2] == "revert" and word in OFF_WORDS:
+        cfg.get("profiles", {}).get(parts[1], {}).pop("revert", None)
+        return
+    if (len(parts) == 4 and parts[0] == "profiles" and parts[2] == "revert"
+            and parts[3] in ("after_hours", "on_ac_hours") and word in OFF_WORDS + ("0", "0.0")):
+        prof = cfg.get("profiles", {}).get(parts[1], {})
+        rv = prof.get("revert")
+        if rv:
+            rv.pop(parts[3], None)
+            if not rv.get("after_hours") and not rv.get("on_ac_hours"):
+                del prof["revert"]
+        return
+    ... (existing body unchanged)
+```
+
+Check `validate()` (the `revert` block around line 145): if it requires `to`, then when the existing body creates a fresh `revert` table (adding a trigger to a profile that had none), default it — after the `for p in parts[:-1]` walk, if `parts[:3] == ["profiles", name, "revert"]` and `"to" not in node`, set `node.setdefault("to", "previous")`. If `validate()` already treats `to` as optional (`resolve_revert_target` defaults to `"previous"`), leave it alone; say which in the report.
+
+`save()` — replace the backup block:
+
+```python
+    if path.exists():
+        # Rename the backup into place rather than opening it for writing: a
+        # .bak left root-owned by a stray `sudo` run would otherwise raise
+        # PermissionError for the service account on every later save.
+        bak = path.with_name(path.name + ".bak")
+        bak_tmp = path.with_name(path.name + ".bak.tmp")
+        bak_tmp.write_bytes(path.read_bytes())
+        os.replace(bak_tmp, bak)
+        try:
+            os.chmod(bak, 0o664)
+        except OSError:
+            pass
+```
+
+`dbb/state.py` — `save_state`: `_make_readable(STATE_FILE, 0o664)`; `append_log`: `_make_readable(log, 0o664)`; update the comment above them: "The service account writes; root may too (a `sudo` run), and with the state directory setgid to the service group a root-created file stays group-writable, so one stray root run never locks the service account out. Any user may read."
+
+`install.sh` — change the state-dir line to `install -d -m2775 -o "$SVC" -g "$SVC" /var/lib/$SVC` and after the `chown -R` add `find /var/lib/$SVC -type f -exec chmod 664 {} +` (repairs files an earlier root run left 0644).
+
+`plasmoid/package/contents/ui/FullRepresentation.qml` — footer revert `Label`: replace its `visible`/`text` with
+
+```qml
+                visible: text !== ""
+                font: Kirigami.Theme.smallFont
+                text: {
+                    const r = root.info ? root.info.revert : null;
+                    if (!r) return "";
+                    if (r.stay) return i18n("No automatic revert - stays on %1 until you change it", root.info.profile.label);
+                    return parts.length > 0 ? i18n("Reverts to %1 in %2", r.to, parts.join(i18n(" or "))) : "";
+                }
+```
+
+(keep the `parts` property as is).
+
+- [ ] **Step 4: Docs.** `README.md`:
+  - Profiles table, `field` row: "Auto-reverts after 72 h, or after 12 h back on AC — both adjustable or removable, see below."
+  - New subsection after the Profiles paragraph:
+
+```markdown
+### Field mode, auto-revert, and why
+
+Field holds both packs at 90–100%. That is exactly the state the rest of
+this tool exists to avoid — high state of charge is the dominant
+calendar-wear input, and a rugged laptop in a bag is usually warm too — so
+the failure mode of field mode is forgetting to leave it. The default
+revert is therefore on: 72 h covers a conference or a long weekend in the
+field, and 12 h of continuous AC means you are back at a desk. You are not
+locked into either:
+
+```sh
+dell-battery-balance profile field                    # same as: profile set field
+dell-battery-balance profile field --for 5d           # this switch reverts after 5 days, nothing else
+dell-battery-balance profile field --stay             # this switch never reverts; you change it yourself
+dell-battery-balance profile edit field revert.after_hours=120
+dell-battery-balance profile edit field revert.on_ac_hours=none
+dell-battery-balance profile edit field revert.to=daily
+dell-battery-balance profile edit field revert=none   # never revert, permanently
+dell-battery-balance profile edit travel revert.after_hours=24   # any profile can revert
+```
+
+`--for` and `--stay` belong to the switch: they replace the profile's own
+triggers for that switch and are forgotten on the next one. Editing
+`revert.*` changes the profile for good; `none`/`off`/`0` removes a
+trigger, and a table with no trigger left is removed with it. Every
+privileged form above goes through `dbb-control` (`--for`/`--stay`) or
+`dbb-configure` (`profile edit`), as in Usage.
+```
+
+  - Usage: after the pkexec block, add: "Plain `sudo dell-battery-balance …` also works — root can do everything — but leaves files it creates root-owned. Since 0.3 the state directory is setgid and files are group-writable, so a stray root run no longer locks the service account out; prefer `sudo -u dell-battery-balance dell-battery-balance …` or the wrappers all the same."
+  - CLI reference rows: `profile set <name> [--for <duration> \| --stay]` — "switch profiles and apply immediately; `--for` reverts after that long and `--stay` never, either one replacing the profile's own triggers for this switch"; add row `` `profile <name>` `` — "shortcut for `profile set <name>`"; `profile edit <name> key=value ...` — add "`revert=none` or `revert.after_hours=none` remove auto-revert"; `field [--for <duration> \| --stay]`.
+  - Spec `§4` block: `profile set <name> [--for <duration> | --stay]`, `field [--for | --stay]`, and the line "`profile <name>` is accepted as `profile set <name>`." Under §1.2 rules add: "`revert` may be removed with `revert=none` (CLI); a trigger set to `none`/`0` is removed, and the table with it when no trigger remains."
+
+- [ ] **Step 5: Run** — full suite with `-W error::ResourceWarning`; `bash -n install.sh`; the standard `plasmawindowed` check from the Global Constraints → nothing. On the machine, read-only: `DBB_STATE_DIR=/tmp/dbb-c10 DBB_CONFIG_DIR=/tmp/dbb-c10 ./dell-battery-balance profile nosuch` prints the profile list in the error.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add dbb tests install.sh plasmoid README.md docs/superpowers/specs
+git commit -m "CLI: profile <name> shortcut, --stay, --for as a true override (issue #1), revert=none; sudo-safe file modes; documented-surface tests
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+```
+
+---
+
 ## Self-review notes
 
 - **Spec §1.3** editing surface: Task 5 (`ConfigBackend.apply`) + Task 2 (`config apply --json`), deviation documented in Task 9. **§4** "one JSON model": `config get --json` reuses the config dict; `state_json` carries the new fields (Task 1). **§5** events: ids (Task 1). **§6.1** remaining fields — power, voltage, temperature, ceiling in force with match indicator and read-back age, health "as reported, updates rarely", mean SoC, % time ≥ 90%, time in slot, last three events, expandable per pack: Task 4; tray text none/profile/divergence: Task 3; profile-specific icon, red dot, amber dot already shipped in Plans A/B. **§6.2** four pages with the listed contents: Tasks 3, 5, 6, 7; "Display page saves to KConfig only": Task 3. **§6.3** four notifications, once per id, kept in KConfig: Task 8 (Task 1 supplies the ids). **§7** pkexec 126/127 = cancel: `ConfigBackend.handle` (Task 5) and the existing `main.qml`. **§8** applet tests: `plasmawindowed` load per task; config pages load headlessly (Task 3 tool); the manual walkthrough of one profile edit and one identity confirmation is called out in Task 6 for the user, since sessions here cannot click.
