@@ -120,6 +120,10 @@ PlasmaExtras.Representation {
                             text: row.modelData === "BAT0"
                                 ? i18n("BAT0 - primary") : i18n("BAT1 - slice")
                         }
+                        PlasmaComponents.Label {
+                            text: row.have && row.bat.pack ? row.bat.pack : i18n("unidentified")
+                            opacity: 0.8
+                        }
                         Item { Layout.fillWidth: true }
                         PlasmaComponents.Label {
                             text: row.have
@@ -205,7 +209,92 @@ PlasmaExtras.Representation {
                             }
                         }
                     }
+
+                    Kirigami.InlineMessage {
+                        id: pendingMsg
+                        Layout.fillWidth: true
+                        readonly property var q: row.have ? row.bat.pending : null
+                        visible: !!q
+                        type: Kirigami.MessageType.Warning
+                        text: {
+                            const q = pendingMsg.q;
+                            if (!q) return "";
+                            const why = q.reason === "insert" ? i18n("A pack was inserted") : i18n("The reading jumped");
+                            const prev = q.previous_pack ? i18n(" (was %1)", q.previous_pack) : "";
+                            const g = q.guess === "same" ? i18n("probably the same pack") : i18n("not sure which pack");
+                            return i18n("%1 in %2%3 - %4. Which pack is this?", why, row.modelData, prev, g);
+                        }
+                        actions: [
+                            Kirigami.Action {
+                                text: pendingMsg.q && pendingMsg.q.previous_pack ? i18n("Same (%1)", pendingMsg.q.previous_pack) : i18n("Same")
+                                icon.name: "dialog-ok"
+                                visible: !!(pendingMsg.q && pendingMsg.q.previous_pack)
+                                enabled: !root.acting
+                                onTriggered: root.act("pack same " + row.modelData, false)
+                            }
+                        ]
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: row.have && !!row.bat.pending
+                        PlasmaComponents.ComboBox {
+                            id: knownPacks
+                            Layout.fillWidth: true
+                            // known, non-retired packs not currently in another slot
+                            model: {
+                                if (!root.info || !root.info.packs) return [];
+                                return root.info.packs
+                                    .filter(p => !p.retired && (!p.in_slot || p.in_slot === row.modelData))
+                                    .map(p => p.name);
+                            }
+                            enabled: !root.acting && count > 0
+                        }
+                        PlasmaComponents.Button {
+                            text: i18n("This one")
+                            enabled: !root.acting && knownPacks.count > 0
+                            onClicked: root.act("pack assign " + row.modelData + " " + knownPacks.currentText, false)
+                        }
+                        PlasmaComponents.TextField {
+                            id: newName
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 6
+                            placeholderText: i18n("new name")
+                        }
+                        PlasmaComponents.Button {
+                            text: i18n("New")
+                            enabled: !root.acting && root.validPackName(newName.text)
+                            onClicked: { root.act("pack new " + row.modelData + " " + newName.text, false); newName.text = ""; }
+                        }
+                    }
                 }
+            }
+
+            PlasmaExtras.Heading {
+                level: 5
+                visible: !!(root.info && root.info.packs && root.info.packs.some(p => !p.in_slot))
+                text: i18n("On the bench")
+            }
+            Repeater {
+                model: root.info && root.info.packs ? root.info.packs.filter(p => !p.in_slot) : []
+                delegate: PlasmaComponents.Label {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    font: Kirigami.Theme.smallFont
+                    opacity: modelData.retired ? 0.5 : 1.0
+                    text: modelData.retired
+                        ? i18n("%1 - retired, %2 EFC", modelData.name, modelData.efc.toFixed(2))
+                        : (modelData.removed_at_soc !== null && modelData.removed_at_soc !== undefined
+                            ? i18n("%1 - %2 EFC, out %3 h at %4%", modelData.name, modelData.efc.toFixed(2), Math.round(modelData.bench_hours), modelData.removed_at_soc)
+                            : i18n("%1 - %2 EFC", modelData.name, modelData.efc.toFixed(2)))
+                }
+            }
+            PlasmaComponents.Label {
+                Layout.fillWidth: true
+                visible: !!(root.info && root.info.rotation)
+                wrapMode: Text.WordWrap
+                font: Kirigami.Theme.smallFont
+                text: root.info && root.info.rotation
+                    ? i18n("Swap in next: %1 for %2 (%3 EFC behind)", root.info.rotation.swap_in, root.info.rotation.replace, root.info.rotation.behind_by_efc.toFixed(2))
+                    : ""
             }
 
             Kirigami.Separator {

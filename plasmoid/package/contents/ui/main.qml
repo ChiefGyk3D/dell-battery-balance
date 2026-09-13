@@ -26,6 +26,14 @@ PlasmoidItem {
 
     readonly property bool fieldMode: info && info.field_mode === true
 
+    readonly property bool hasPending: !!(info && info.pending && Object.keys(info.pending).length > 0)
+
+    // Pack names must match this before we bother spawning a pkexec prompt
+    // for them; the CLI re-validates on the privileged side regardless.
+    function validPackName(s) {
+        return /^[A-Za-z0-9_-]{1,16}$/.test(s || "");
+    }
+
     Plasmoid.icon: fieldMode ? "battery-profile-performance"
                              : "battery-profile-powersave"
 

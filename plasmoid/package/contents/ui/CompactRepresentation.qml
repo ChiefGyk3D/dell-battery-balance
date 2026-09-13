@@ -37,4 +37,18 @@ MouseArea {
         border.width: 1
         border.color: Kirigami.Theme.backgroundColor
     }
+
+    // A pack swap left an identity question unanswered. Field mode's red
+    // dot takes precedence since it is the more urgent condition.
+    Rectangle {
+        visible: root.hasPending && !root.fieldMode
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        width: Math.round(parent.width / 3)
+        height: width
+        radius: width / 2
+        color: Kirigami.Theme.neutralTextColor
+        border.width: 1
+        border.color: Kirigami.Theme.backgroundColor
+    }
 }
