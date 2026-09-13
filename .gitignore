@@ -3,7 +3,7 @@ __pycache__/
 # Local run artifacts, if the state dir is ever pointed here for testing
 state.json
 state.json.tmp
-samples.csv
+samples-*.csv
 
 # Subagent-driven-development scratch (ledger, briefs, review packages)
 .superpowers/

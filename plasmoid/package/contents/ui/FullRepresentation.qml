@@ -54,14 +54,15 @@ PlasmaExtras.Representation {
         }
     }
 
-    contentItem: Item {
-        implicitHeight: column.implicitHeight
+    contentItem: Flickable {
+        id: flick
+        clip: true
+        contentWidth: width
+        contentHeight: column.implicitHeight
 
         ColumnLayout {
             id: column
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
+            width: flick.width
             spacing: Kirigami.Units.smallSpacing
 
             // ---- config error --------------------------------------------
@@ -347,6 +348,8 @@ PlasmaExtras.Representation {
                     ? root.info.recommendation.why : ""
             }
         }
+
+        PlasmaComponents.ScrollBar.vertical: PlasmaComponents.ScrollBar {}
     }
 
     footer: PlasmaExtras.PlasmoidHeading {

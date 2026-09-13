@@ -73,6 +73,12 @@ for the full schema.
 
 ## Packs and swapping
 
+**Label each pack physically** — a sticker with the name you register it
+under (`A`, `B`, or whatever you pick) — the moment you name it. The tool
+has no way to tell the packs apart electrically, so a wrong `pack same` or
+`pack assign` silently corrupts that pack's wear history, and there is no
+way to detect the mistake after the fact.
+
 Both packs report an identical serial, ePPID and manufacture date, so the
 tool cannot read which physical pack is in which slot — it has to ask.
 Wear is tracked per *tenure* (one continuous occupancy of a slot) and rolled
@@ -88,20 +94,24 @@ rather than assumes. `status`/`report` show a `PENDING <slot>` line, and the
 applet surfaces the same question in its popup, with one of three answers:
 
 - `pack same <slot>` — confirm it is the pack that was previously in that
-  slot (offered only when the new reading is close enough to a guess of
-  `same`, i.e. within 3% of design capacity of where the previous occupant
-  left off, with `charge_full` unchanged).
+  slot. Always available whenever that slot has a previous pack, whatever
+  the guess; the guess (`same` when the new reading is within 3% of design
+  capacity of where the previous occupant left off, with `charge_full`
+  unchanged, else `unsure`) only labels which answer looks likely — it never
+  restricts which answer you may give.
 - `pack assign <slot> <name>` — identify it as an existing named pack (e.g.
   after a deliberate swap with a pack you already track).
 - `pack new <slot> <name>` — register a pack seen for the first time.
 
 `pack list` prints every known pack's EFC, calendar score, and whether it is
-in a slot, on the bench, or retired, plus a bench-time warning when a pack
-has been sitting for a while (removed above ~70% SoC is flagged — that is
-poor storage practice for Li-ion). It also lists any pending questions.
-When one bench pack has drifted more than `general.deadband_efc` behind the
-most-worn inserted pack, `status`/`report`/`pack list` print a rotation hint
-naming which pack to swap in and which to pull.
+in a slot, on the bench, or retired, plus how long a benched pack has been
+sitting and at what SoC. It also lists any pending questions. A pack removed
+above ~70% SoC — poor storage practice for Li-ion — is flagged once, as a
+`warning` event at removal time shown by `report` (and the applet's events
+list); it is not an ongoing flag on `pack list` rows. When one bench pack
+has drifted more than `general.deadband_efc` behind the most-worn inserted
+pack, `status`/`report`/`pack list` print a rotation hint naming which pack
+to swap in and which to pull.
 
 Getting an answer wrong is not permanent: `pack reassign <tenure-id> <name>`
 re-labels a specific tenure after the fact — the undo for a misidentified
@@ -150,6 +160,9 @@ an existing install:
 - Upgrades the Plasma applet in place (`kpackagetool6 ... --upgrade`, falling
   back to `--install` only if it was never installed).
 - Enables `dell-battery-balance.timer` (replacing the old sample timer).
+- An existing single `samples.csv` from 0.1 is left in place but no longer
+  appended to — new samples go to `samples-YYYY.csv`, one file per calendar
+  year, from the first sample after upgrading.
 
 ## Usage
 
@@ -371,6 +384,18 @@ notifications.
   and swapping above. A swap that happens to look continuous (same design
   capacity, charge picked back up close to where it left off) can still be
   missed; `pack reassign` fixes a tenure that was mislabeled this way.
+- **A swap across a shutdown or long suspend can be undetectable.** The
+  discontinuity check's charge allowance scales up with the elapsed gap, so
+  a swap that happens during a shutdown or suspend longer than about 20
+  minutes can look perfectly plausible either way — confirm identity
+  yourself (`pack same`/`assign`) after any such gap rather than trusting
+  the guess.
+- **Repairing a pair that got swapped while both were out:** if BAT0 and
+  BAT1 both end up mislabeled after being pulled together and reinserted
+  swapped, the fix is: `pack new BAT0 TMP` (frees BAT0's current label),
+  `pack assign BAT1 A`, `pack assign BAT0 B` (now that `A` is free to move),
+  then `reset --pack TMP` (discards the throwaway tenure the first step
+  created).
 - **Only BAT0 exposes `charge_control_*` to Linux sysfs.** BAT1 is reachable
   only via `dell-wmi-sysman`, so generic tools like TLP can never manage it.
   The script uses sysman for both and falls back to `power_supply` for BAT0.
@@ -388,19 +413,21 @@ notifications.
 python3 -m unittest discover -s tests -v
 ```
 
-133 tests across six files (`test_wear_model.py`, `test_policy.py`,
-`test_config.py`, `test_apply.py`, `test_registry.py`, `test_cli.py`), all
-against a fake `/sys` tree and temp state/config dirs (`DBB_SYSFS_ROOT`,
-`DBB_STATE_DIR`, `DBB_CONFIG_DIR`) — never real hardware or files. Coverage
-includes: three full sequential-discharge cycles, asserting the pack doing
-the draining accumulates more EFC, the idle pack accumulates more calendar
-score, the drain-order detector credits one event per unplug, the deadband
-holds near-equal packs neutral, and bands clamp to the firmware's limits;
-the policy engine's role/band/pin/revert resolution; config schema
-validation and `set_dotted` coercion; firmware apply/read-back and mismatch
-recording; the pack registry's tenure lifecycle, swap detection and
-identity guessing, totals/rotation-hint math, and version-1-to-2 state
-migration; and the full CLI surface, including profile switching, `--for`
-one-off reverts, config get/set/validate/apply strictness, the `pack ...`
-subcommands and `reset --pack`, the per-year sample-log rotation, and the
-polkit-class gate (control vs. pack-admin/configure).
+146 tests across seven files (`test_wear_model.py`, `test_policy.py`,
+`test_config.py`, `test_apply.py`, `test_registry.py`, `test_cli.py`,
+`test_state.py`), all against a fake `/sys` tree and temp state/config dirs
+(`DBB_SYSFS_ROOT`, `DBB_STATE_DIR`, `DBB_CONFIG_DIR`) — never real hardware
+or files. Coverage includes: three full sequential-discharge cycles,
+asserting the pack doing the draining accumulates more EFC, the idle pack
+accumulates more calendar score, the drain-order detector credits one event
+per unplug, the deadband holds near-equal packs neutral, and bands clamp to
+the firmware's limits; the policy engine's role/band/pin/revert resolution;
+config schema validation and `set_dotted` coercion; firmware apply/read-back
+and mismatch recording; the pack registry's tenure lifecycle, swap detection
+(including both packs pulled and reinserted swapped) and identity guessing,
+totals/rotation-hint math with bench calendar-aging carried across a
+reinsertion, and version-1-to-2 state migration; and the full CLI surface,
+including profile switching, `--for` one-off reverts, config
+get/set/validate/apply strictness, the `pack ...` subcommands and
+`reset --pack`, the `report` tenure table, the per-year sample-log rotation,
+and the polkit-class gate (control vs. pack-admin/configure).
