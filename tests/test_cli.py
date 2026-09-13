@@ -99,6 +99,30 @@ class Tick(CliBase):
         self.assertIn("nope", j["config_error"])
         self.assertEqual(j["profile"]["name"], "daily")
 
+    def test_end_to_end_auto_revert_on_tick(self):
+        # auto_balance off must not block a due revert: tick still reverts
+        # and applies the neutral band of the profile it reverts to.
+        self.run_cli("config", "set", "general.auto_balance=false")
+        code, _, err = self.run_cli("profile", "set", "field", "--for", "1h")
+        self.assertEqual(code, 0, err)
+
+        state_path = os.path.join(os.environ["DBB_STATE_DIR"], "state.json")
+        with open(state_path) as fh:
+            st = json.load(fh)
+        st["profile_switched_ts"] -= 7200
+        with open(state_path, "w") as fh:
+            json.dump(st, fh)
+
+        code, _, err = self.run_cli("tick")
+        self.assertEqual(code, 0, err)
+        j = self.status()
+        self.assertEqual(j["profile"]["name"], "daily")
+        self.assertEqual(j["profile"]["previous"], "field")
+        last = j["events"][-1]
+        self.assertEqual(last["kind"], "profile")
+        self.assertIn("revert", last["detail"])
+        self.assertEqual(self.fs.read("class/firmware-attributes/dell-wmi-sysman/attributes/SliceBattCustomChargeStop/current_value"), "80")
+
     def test_truncated_config_is_reported_not_defaulted(self):
         code, _, err = self.run_cli("tick")
         self.assertEqual(code, 0, err)
@@ -148,6 +172,16 @@ class Profiles(CliBase):
         self.assertNotEqual(code, 0)
         self.assertIn("duration", err)
 
+    def test_for_duration_works_on_profile_without_revert_table(self):
+        # travel has no [profiles.travel.revert] table -- --for must still
+        # arm a one-off revert (spec: --for belongs to the switch, not the
+        # profile).
+        self.run_cli("profile", "set", "travel", "--for", "2h")
+        j = self.status()
+        self.assertIsNotNone(j["revert"])
+        self.assertAlmostEqual(j["revert"]["after_hours_left"], 2.0, places=1)
+        self.assertEqual(j["revert"]["to"], "daily")
+
     def test_create_edit_delete(self):
         code, _, err = self.run_cli("profile", "create", "demo", "--from", "daily")
         self.assertEqual(code, 0, err)
@@ -171,12 +205,27 @@ class Profiles(CliBase):
         self.assertIn("profiles.daily.bands.neutral", err)
         self.assertEqual(self.status()["profiles"][0]["name"], "daily")
 
+    def test_edit_bad_value_does_not_traceback(self):
+        code, _, err = self.run_cli("profile", "edit", "daily", "bands.neutral=abc")
+        self.assertNotEqual(code, 0)
+        self.assertIn("error:", err)
+
+    def test_edit_assignment_without_equals_rejected(self):
+        code, _, err = self.run_cli("profile", "edit", "daily", "label")
+        self.assertNotEqual(code, 0)
+        self.assertIn("key=value", err)
+
 
 class ConfigCmd(CliBase):
     def test_get_set_roundtrip(self):
         self.run_cli("config", "set", "general.deadband_efc=0.3")
         code, out, _ = self.run_cli("config", "get", "general.deadband_efc")
         self.assertEqual(out.strip(), "0.3")
+
+    def test_set_bad_value_does_not_traceback(self):
+        code, _, err = self.run_cli("config", "set", "general.deadband_efc=abc")
+        self.assertNotEqual(code, 0)
+        self.assertIn("deadband_efc", err)
 
     def test_apply_validates(self):
         # A full config (strict schema) with only deadband_efc broken -- the
@@ -189,6 +238,19 @@ class ConfigCmd(CliBase):
         code, _, err = self.run_cli("config", "apply", p)
         self.assertNotEqual(code, 0)
         self.assertIn("deadband_efc", err)
+
+    def test_apply_missing_path_leaves_config_unchanged(self):
+        self.run_cli("config", "set", "general.deadband_efc=0.9")
+        code, _, err = self.run_cli("config", "apply", "/nonexistent/x.toml")
+        self.assertNotEqual(code, 0)
+        self.assertIn("not found", err)
+        code, out, _ = self.run_cli("config", "get", "general.deadband_efc")
+        self.assertEqual(out.strip(), "0.9")
+
+    def test_validate_missing_path_rejected(self):
+        code, _, err = self.run_cli("config", "validate", "/nonexistent/x.toml")
+        self.assertNotEqual(code, 0)
+        self.assertIn("not found", err)
 
     def test_status_ok_when_config_dir_parent_is_read_only(self):
         ro = os.path.join(self.tmp.name, "ro")

@@ -10,7 +10,7 @@
 # any later version. See the LICENSE file for the full text.
 #
 """Turn config + measured state into the bands each slot should hold."""
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from dbb.config import profile_type
 from dbb.state import add_event
@@ -49,11 +49,17 @@ def decide_roles(efc_map, deadband):
 
 
 def revert_due(profile, state, now):
+    # --for belongs to the SWITCH, not the profile (spec S4): a one-off
+    # override must fire even on a profile with no [profiles.X.revert]
+    # table at all (e.g. travel), so it is checked first and unconditionally.
+    switched = state.get("profile_switched_ts")
+    one_off = state.get("one_off_revert_hours")
+    if one_off and switched is not None and (now - switched) / 3600.0 >= one_off:
+        return "after_hours"
     rv = profile.get("revert")
     if not rv:
         return None
-    switched = state.get("profile_switched_ts")
-    after = state.get("one_off_revert_hours") or rv.get("after_hours")
+    after = rv.get("after_hours")
     if after and switched is not None and (now - switched) / 3600.0 >= after:
         return "after_hours"
     on_ac = rv.get("on_ac_hours")
@@ -64,7 +70,9 @@ def revert_due(profile, state, now):
 
 
 def resolve_revert_target(cfg, profile_name):
-    rv = cfg["profiles"][profile_name].get("revert", {})
+    # A profile with no [revert] table (e.g. travel, when reached only via a
+    # one-off --for override) still resolves "to" as "previous".
+    rv = cfg["profiles"][profile_name].get("revert") or {}
     to = rv.get("to", "previous")
     if to == "previous":
         to = cfg["general"].get("previous_profile", "daily")
@@ -97,16 +105,13 @@ def _bands_for_profile(profile, roles, present):
         if slot not in present:
             continue
         if "role" in pin:
-            out[slot] = tuple(bands.get(pin["role"], bands.get("all", (50, 80))))
+            # A fixed profile has only "all"; a balancing profile has no
+            # "all", so the role always exists in `bands` there. No
+            # hard-coded fallback: whichever key applies is authoritative.
+            out[slot] = tuple(bands["all"]) if "all" in bands else tuple(bands[pin["role"]])
         else:
             out[slot] = (pin["start"], pin["stop"])
     return {b: clamp_band(*v) for b, v in out.items()}
-
-
-def bands_for(cfg, profile_name):
-    """Convenience: the clamped bands table for a profile, keyed as authored."""
-    bands = cfg["profiles"][profile_name]["bands"]
-    return {k: clamp_band(*v) for k, v in bands.items()}
 
 
 def resolve(cfg, state, sample, now):

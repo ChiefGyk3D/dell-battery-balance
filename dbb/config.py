@@ -1,3 +1,14 @@
+#
+# dell-battery-balance - wear tracking and charge-ceiling balancing for the
+# two battery packs in a Dell Latitude Rugged.
+#
+# Copyright (C) 2026 ChiefGyk3D
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version. See the LICENSE file for the full text.
+#
 """System-wide configuration: /etc/dell-battery-balance/config.toml."""
 import copy
 import json
@@ -169,14 +180,24 @@ def validate(cfg):
 
 # --------------------------------------------------------------- load / emit
 
-def load(path=CONFIG_FILE):
+def load(path=CONFIG_FILE, must_exist=False):
     path = Path(path)
-    if not path.exists():
+    try:
+        exists = path.exists()
+    except OSError:
+        exists = False
+    if not exists:
+        if must_exist:
+            raise ConfigError(f"{path}: not found or unreadable")
         return default_config()
     try:
         with path.open("rb") as fh:
             cfg = tomllib.load(fh)
-    except (OSError, tomllib.TOMLDecodeError) as e:
+    except OSError as e:
+        if must_exist:
+            raise ConfigError(f"{path}: not found or unreadable") from e
+        raise ConfigError(f"{path}: {e}") from e
+    except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{path}: {e}") from e
     validate(cfg)
     return cfg

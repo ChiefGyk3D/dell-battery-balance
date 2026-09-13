@@ -135,6 +135,17 @@ class Revert(unittest.TestCase):
         policy.switch_profile(self.cfg, self.state, "daily", now=5.0, reason="test")
         self.assertIsNone(self.state["one_off_revert_hours"])
 
+    def test_one_off_for_works_on_profile_without_revert_table(self):
+        # travel has no [profiles.travel.revert] -- --for must still arm a
+        # one-off revert regardless (spec: --for belongs to the switch).
+        policy.switch_profile(self.cfg, self.state, "travel", now=0.0, reason="test")
+        self.state["one_off_revert_hours"] = 2
+        self.assertIsNone(policy.revert_due(self.cfg["profiles"]["travel"], self.state,
+                                            now=3600.0))
+        self.assertEqual(policy.revert_due(self.cfg["profiles"]["travel"], self.state,
+                                           now=2 * 3600.0 + 1), "after_hours")
+        self.assertEqual(policy.resolve_revert_target(self.cfg, "travel"), "daily")
+
 
 if __name__ == "__main__":
     unittest.main()

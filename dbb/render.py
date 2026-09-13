@@ -27,11 +27,14 @@ def wh(uah, uv):
 
 
 def _revert_info(cfg, state, name, prof, now):
-    rv = (prof or {}).get("revert")
-    if not rv:
+    rv = (prof or {}).get("revert") or {}
+    one_off = state.get("one_off_revert_hours")
+    # A profile with no [revert] table (e.g. travel) still has revert info to
+    # report once a one-off --for override is armed on it.
+    if not rv and not one_off:
         return None
     switched = state.get("profile_switched_ts")
-    after = state.get("one_off_revert_hours") or rv.get("after_hours")
+    after = one_off or rv.get("after_hours")
     run = state.get("ac_run_start_ts")
     return {
         "to": policy.resolve_revert_target(cfg, name),
@@ -99,6 +102,20 @@ def fmt_status(state, s, cfg):
     else:
         lines.append("EC drain order: not yet observed "
                      f"(needs unplug events; {state.get('sessions', 0)} seen)")
+
+    fw = state.get("firmware", {})
+    if fw:
+        lines.append("")
+        lines.append("firmware:")
+        for slot, rec in sorted(fw.items()):
+            req = rec.get("requested")
+            obs = rec.get("observed")
+            req_s = f"{req[0]}/{req[1]}" if req else "?"
+            obs_s = f"{obs[0]}/{obs[1]}" if obs else "unknown"
+            line = f"  {slot}: {req_s} -> {obs_s}"
+            if rec.get("error"):
+                line += f"  ERROR {rec['error']}"
+            lines.append(line)
 
     pol = state.get("policy")
     if pol:
@@ -181,12 +198,10 @@ def state_json(state, s, cfg):
     out["config_error"] = state.get("config_error")
     out["events"] = state.get("events", [])[-10:]
 
-    roles, why = policy.decide_roles(policy.efc_by_slot(state), cfg["general"]["deadband_efc"])
-    bands_map = prof["bands"]
+    res = policy.resolve(cfg, state, s, time.time())
     out["recommendation"] = {
-        "why": why,
-        "roles": roles,
-        "bands": {b: tuple(bands_map.get(r, bands_map.get("all", (50, 80))))
-                  for b, r in (roles or {}).items()},
+        "why": res.why,
+        "roles": res.roles,
+        "bands": {slot: list(band) for slot, band in res.bands.items()},
     }
     return out

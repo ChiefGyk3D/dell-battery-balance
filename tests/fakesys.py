@@ -1,5 +1,4 @@
 """Builds a fake /sys tree so tests never touch real hardware."""
-import os
 from pathlib import Path
 
 

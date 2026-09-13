@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 from dbb import VERSION, apply as apply_mod, config as cfg_mod, policy, render
-from dbb.state import add_event, append_log, load_state, save_state
+from dbb.state import add_event, append_log, load_state, now_iso, save_state
 from dbb.sysfs import BATS, sample_all
 from dbb.wear import integrate
 
@@ -68,7 +68,7 @@ def _apply(cfg, state, sample, res):
     if r["mismatch"] and not cfg["general"]["firmware_write_needs_reboot"]:
         cfg["general"]["firmware_write_needs_reboot"] = True
         _save_config(cfg, state, "recording firmware mismatch")
-    state["policy"] = {"ts": time.time(), "profile": res.profile, "roles": res.roles,
+    state["policy"] = {"ts": now_iso(), "profile": res.profile, "roles": res.roles,
                        "mode": res.profile_type}
     return r
 
@@ -213,8 +213,13 @@ def cmd_profile_edit(args):
     if args.name not in cfg["profiles"]:
         die(f"error: no profile {args.name!r}")
     for kv in args.assignments:
+        if "=" not in kv:
+            die(f"error: expected key=value, got {kv!r}")
         k, _, v = kv.partition("=")
-        cfg_mod.set_dotted(cfg, f"profiles.{args.name}.{k}", v)
+        try:
+            cfg_mod.set_dotted(cfg, f"profiles.{args.name}.{k}", v)
+        except cfg_mod.ConfigError as e:
+            die(f"error: {e}")
     _save_config(cfg, state, "editing profile")
     save_state(state)
 
@@ -253,15 +258,20 @@ def cmd_config_get(args):
 def cmd_config_set(args):
     state, cfg, _ = _view()
     for kv in args.assignments:
+        if "=" not in kv:
+            die(f"error: expected key=value, got {kv!r}")
         k, _, v = kv.partition("=")
-        cfg_mod.set_dotted(cfg, k, v)
+        try:
+            cfg_mod.set_dotted(cfg, k, v)
+        except cfg_mod.ConfigError as e:
+            die(f"error: {e}")
     _save_config(cfg, state, "config set")
     save_state(state)
 
 
 def cmd_config_validate(args):
     try:
-        cfg_mod.load(args.path)
+        cfg_mod.load(args.path, must_exist=True)
     except cfg_mod.ConfigError as e:
         die(f"error: {e}")
     print("ok")
@@ -270,9 +280,12 @@ def cmd_config_validate(args):
 def cmd_config_apply(args):
     # The applied file replaces the whole config -- same strict, full-schema
     # semantics as config.load()/config validate, not a partial overlay.
+    # must_exist=True: a missing/unreadable path must never silently fall
+    # back to default_config() here, or this REPLACES the real config with
+    # defaults and destroys custom profiles and settings.
     state = load_state()
     try:
-        cfg = cfg_mod.load(args.path)
+        cfg = cfg_mod.load(args.path, must_exist=True)
     except cfg_mod.ConfigError as e:
         die(f"error: {e}")
     _save_config(cfg, state, "config apply")
@@ -308,7 +321,7 @@ def cmd_reset(args):
 # --------------------------------------------------------------------- main
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="dell-battery-balance",
+    p = argparse.ArgumentParser(prog="dell-battery-balance", allow_abbrev=False,
                                 description="Wear tracking and charge-ceiling balancing for a Dell Rugged's packs.")
     p.add_argument("--version", action="version", version=VERSION)
     p.add_argument("--polkit-class", choices=("control", "configure"), help=argparse.SUPPRESS)
