@@ -525,8 +525,9 @@ swaps and rotations (with confirm-on-swap identity, since these packs expose
 no per-unit identity) are all implemented, per
 [docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md](docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md).
 The applet's config dialog and notifications landed in 0.3, completing the
-spec. Open follow-ups are tracked in the issues (`pack swap`, `--for`
-clipping, sysfs-hiccup pending).
+spec. 0.3.1 closed the follow-ups (`pack swap`, the two-sample removal
+guard, `--for` as a true override) and added the Prometheus export and
+sample-log retention. Nothing is queued; new work starts from an issue.
 
 ## Known limits
 
@@ -598,9 +599,10 @@ clipping, sysfs-hiccup pending).
 python3 -m unittest discover -s tests -v
 ```
 
-178 tests across eight files (`test_wear_model.py`, `test_policy.py`,
+211 tests across ten files (`test_wear_model.py`, `test_policy.py`,
 `test_config.py`, `test_apply.py`, `test_registry.py`, `test_cli.py`,
-`test_state.py`, `test_cli_surface.py`), all against a fake `/sys` tree and
+`test_state.py`, `test_cli_surface.py`, `test_applet_package.py`,
+`test_metrics.py`), all against a fake `/sys` tree and
 temp state/config dirs (`DBB_SYSFS_ROOT`, `DBB_STATE_DIR`, `DBB_CONFIG_DIR`)
 — never real hardware or files. Coverage includes: three full
 sequential-discharge cycles, asserting the pack doing the draining
