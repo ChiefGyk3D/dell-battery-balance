@@ -16,7 +16,7 @@ from dbb import overnight, registry
 from dbb.config import profile_type
 from dbb.state import add_event
 from dbb.sysfs import BATS, clamp_band
-from dbb.wear import ACTIVE_DAY_STINT_MIN, ACTIVE_DAY_WINDOW_H
+from dbb.wear import ACTIVE_DAY_WINDOW_H
 
 
 class PolicyError(ValueError):
@@ -95,8 +95,17 @@ def revert_eta(profile, state, now):
     if rv.get("after_hours") and switched is not None:
         etas.append(rv["after_hours"] - (now - switched) / 3600.0)
     run = state.get("ac_run_start_ts")
-    if rv.get("on_ac_hours") and run is not None and not active_day(state, now):
-        etas.append(rv["on_ac_hours"] - (now - run) / 3600.0)
+    if rv.get("on_ac_hours") and run is not None:
+        remaining = rv["on_ac_hours"] - (now - run) / 3600.0
+        if active_day(state, now):
+            # The guard is still holding: the trigger can't fire before it
+            # releases, however close `remaining` already is (or has gone
+            # negative) -- so the true ETA is whichever is later.
+            guard_eta = (state["last_battery_stint_end_ts"]
+                         + ACTIVE_DAY_WINDOW_H * 3600.0 - now) / 3600.0
+            etas.append(max(remaining, guard_eta))
+        else:
+            etas.append(remaining)
     return min(etas) if etas else None
 
 
@@ -141,11 +150,22 @@ def switch_profile(cfg, state, name, now, reason):
     g = cfg["general"]
     if name != g["active_profile"]:
         g["previous_profile"] = g["active_profile"]
+        # A genuine switch (including between two conference profiles) must
+        # not let the outgoing profile's phase, manual flag or leave-at
+        # override leak into the incoming one (issue I3).
+        ov = overnight.ensure(state)
+        if ov.get("phase") != "off":
+            add_event(state, "overnight", "profile changed; overnight off")
+        overnight.reset(state)
+    else:
+        # Re-selecting the profile already active (e.g. "profile set X
+        # --stay" while on X): leave any in-progress overnight phase alone,
+        # only the leave-at override is a per-switch thing.
+        overnight.ensure(state)["leave_at_override_ts"] = None
     g["active_profile"] = name
     state["profile_switched_ts"] = now
     state["one_off_revert_hours"] = None
     state["revert_warned_ts"] = None
-    overnight.ensure(state)["leave_at_override_ts"] = None
     add_event(state, "profile", f"-> {name} ({reason})")
 
 

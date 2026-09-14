@@ -205,6 +205,17 @@ class Revert(unittest.TestCase):
         with self.assertRaises(policy.PolicyError):
             policy.extend(self.cfg, self.state, 1.0, now=30.0)
 
+    def test_hour_out_warning_survives_the_still_going_out_guard(self):
+        # The guard holds the on-AC trigger while active_day() is true, but
+        # revert_eta must still see it coming (and revert_soon must still
+        # warn) instead of omitting the on-AC branch entirely.
+        f = self.cfg["profiles"]["field"]
+        self.state["ac_run_start_ts"] = 0.0
+        self.state["last_battery_stint_end_ts"] = 0.0
+        self.assertAlmostEqual(policy.revert_eta(f, self.state, now=23.5 * 3600.0), 0.5)
+        self.assertTrue(policy.revert_soon(f, self.state, now=23.5 * 3600.0))
+        self.assertEqual(policy.revert_due(f, self.state, now=24 * 3600.0 + 1), "on_ac_hours")
+
     def test_switch_clears_warning_marker(self):
         self.state["revert_warned_ts"] = 1.0
         policy.switch_profile(self.cfg, self.state, "daily", now=5.0, reason="test")
