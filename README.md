@@ -60,14 +60,17 @@ behaviour anyway (`EC reaches for first` in the report).
 |---|---|---|---|
 | `daily` | balancing | neutral 50/80, protect 50/60, work 80/90 | Docked/desk default. Cannot be deleted. |
 | `field` | fixed | all 90/100 | Maximum runtime, wear protection off. Auto-reverts after 72 h, or after 12 h back on AC — both adjustable or removable, see below. |
+| `conference` | conference | all 90/100 by day, hold 70/80 overnight | Con week. Full by day, held overnight on AC from `night_from` (23:00), topped off in time for `leave_at` (07:00). Auto-reverts after 7 days, or after 12 h on AC once you have stopped going out daily. Or set `overnight.mode = "full"` to leave the packs at 100%. |
 | `travel` | balancing | neutral 70/90, protect 60/80, work 80/95 | Reserve without the 100% float. |
 | `storage` | fixed | all 50/55 | Long idle, least wear. |
 
 A balancing profile flips a pack between `protect` and `work` once EFC
 divergence exceeds `general.deadband_efc` (default 0.5) — without that
 hysteresis the policy would oscillate on every tick. A fixed profile applies
-the same band to both packs regardless of wear. Profiles, bands, pins and
-revert rules all live in `/etc/dell-battery-balance/config.toml`; see
+the same band to both packs regardless of wear. A conference profile is a
+fixed profile with an `[overnight]` table; see Conference weeks below.
+Profiles, bands, pins and revert rules all live in
+`/etc/dell-battery-balance/config.toml`; see
 [the design doc, §1](docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md#1-configuration)
 for the full schema.
 
@@ -98,6 +101,64 @@ triggers for that switch and are forgotten on the next one. Editing
 trigger, and a table with no trigger left is removed with it. Every
 privileged form above goes through `dbb-control` (`--for`/`--stay`) or
 `dbb-configure` (`profile edit`), as in Usage.
+
+### Conference weeks
+
+Hacker summer camp is six or seven days with a hotel night in the middle
+of each, and DEF CON evenings do not end when the talks do. Plain `field`
+fights that twice: the 72 h trigger fires mid-week, and 12 h on hotel AC
+is exactly one night, so you wake up reverted to 50/80. `field --for 8d`
+stops the fight but parks both packs at 100% for every night — the
+calendar wear this tool exists to avoid. The `conference` profile does
+better, because the firmware can only cap charging (it cannot lower a
+pack that is already full), so the saving has to come from stopping the
+charge at the hold band the moment you plug in for the night:
+
+```sh
+dell-battery-balance profile create defcon --template conference   # once; any name
+dell-battery-balance profile edit defcon overnight.night_from=23:00 overnight.leave_at=07:00
+dell-battery-balance profile set defcon --until 2026-08-10          # or --for 8d, or --stay
+```
+
+- **By day** the profile is `field`: 90/100 on both packs. Plugging in
+  before `night_from` charges to 100% — come back at 7 PM, charge, go
+  back out to the CTF.
+- **Inside the night window** (`night_from` to `leave_at`, default 23:00
+  to 07:00) a plug-in holds both packs at `overnight.hold` (70/80). The
+  tool estimates how long a full top-off takes — both packs charge one
+  after the other on this EC, at the charging current it has measured,
+  plus a tail and `margin_min` — and lifts the hold at `leave_at` minus
+  that, so you unplug at 100%.
+- **Two evening buttons** (popup or CLI) cover the nights that differ:
+  `topoff now` lifts the hold and charges to 100% until you unplug (back
+  out at midnight), `night` starts the hold now (an early night at
+  8 PM, or a GrrCon-style week — or set `night_from = "19:00"` on a copy
+  of the profile).
+- **`leave-at 06:00`** is a one-off departure time for the next top-off
+  (`--tomorrow` forces tomorrow's; `none` clears it); it is forgotten on
+  the next profile switch. The popup has a field for it.
+- **Waking for the top-off.** The tick cannot run while the laptop is
+  suspended, so while holding, the tool asks the root wake helper to
+  program the RTC alarm for the top-off time. The machine wakes, the
+  tick lifts the hold, and — if the lid is still closed and
+  `general.topoff_resuspend` is true (the default) — it goes back to
+  sleep. Suspend, do not hibernate, on con nights: the RTC alarm does
+  not wake a hibernated machine.
+- **`overnight.mode = "full"`** keeps the profile but leaves the packs
+  at 100% on AC, for anyone who would rather not have the laptop wake
+  itself. The rest of the machinery is inert in that mode.
+
+Status and the popup show the state in one line, for example
+`overnight: holding 70/80, top-off 05:31 (1h29m) for 07:00`.
+
+Three revert changes apply to every profile that reverts, not only
+conference: the on-AC trigger no longer fires while you are still going
+out daily (any battery stint of 30 minutes or more in the last 24 h
+holds it — a hotel night never trips it, a desk trips it after a day);
+an hour before any revert fires you get a `revert-warning` event (and a
+notification), and `profile extend 24h` — the popup's Extend button —
+pushes it out; and `--until <when>` sits next to `--for` for a date you
+actually know.
 
 ## Packs and swapping
 
@@ -252,7 +313,7 @@ does not recognize even though it is valid, equivalent TOML.
 | `profile <name>` | shortcut for `profile set <name>` |
 | `profile set <name> [--for <duration> \| --until <when> \| --stay]` | switch profiles and apply immediately; `--for` reverts after that long, `--until` at a local date/time (`2026-08-10`, `2026-08-10 07:00`, `07:00`), `--stay` never — any of them replacing the profile's own triggers for this switch |
 | `profile create <name> --from <name> \| --template <builtin>` | clone an existing profile, or start from a shipped default (`conference`, `field`, `travel`, `storage`, `daily`) that an older config.toml may not have |
-| `profile edit <name> key=value ...` | change one profile's fields; `revert=none` or `revert.after_hours=none` remove auto-revert |
+| `profile edit <name> key=value ...` | change one profile's fields; `revert=none` or `revert.after_hours=none` remove auto-revert; `overnight=default` adds the conference table to a fixed profile, `overnight.<key>=…` edits it, `overnight=none` removes it |
 | `profile delete <name>` | remove a profile (not `daily`, not the active one) |
 | `profile extend <duration>` | push the active profile's auto-revert out by that long (the on-AC clock restarts too); refused when nothing would revert |
 | `config get [key] [--json]` | print the whole config or one dotted key; `--json` is what the applet's config dialog reads |
@@ -297,6 +358,14 @@ Clearing `bios_password_file` does not revoke the group grant on
 `Admin/current_password` until the next reboot (sysfs permissions are reset
 then) or until the grant script is edited and the file is `chmod`ed back
 manually in the meantime.
+
+A second root step, `/usr/local/libexec/dell-battery-balance-wake`
+(`ExecStartPost=+`), programs the RTC wake alarm the tick asked for
+(`wakealarm` in the state directory), clears only alarms it set itself
+(`wakealarm.set` is its proof of ownership), and after a wake it caused puts
+the machine back to sleep if the lid is closed and `general.topoff_resuspend`
+is true. It reads 32 bytes, accepts only an integer at most 24 h ahead, and
+touches nothing else.
 
 Two polkit actions gate the two wrappers used above:
 
@@ -388,10 +457,17 @@ root item), and plasmashell must be restarted after
 
 Field mode is flagged in two places on purpose — a red dot on the tray icon
 and a warning banner in the popup — because it disables the calendar-wear
-protection and is otherwise easy to leave on by accident.
+protection and is otherwise easy to leave on by accident. For a conference
+profile, the banner is followed by an overnight line and its three controls
+— Top off now, In for the night, and a Leaving at field — and, whenever the
+active profile is within an hour of an auto-revert, an Extend button sits
+next to the revert countdown.
 
 <p align="center">
-  <img src="media/applet-popup.png" width="520" alt="The applet popup: both packs with wear numbers, the ceiling read-back, divergence, EC drain order, recent events, and the profile buttons">
+  <img src="media/applet-popup.png" width="520" alt="The applet popup: both packs with wear numbers, the ceiling read-back, divergence, EC drain order, recent events, the profile buttons, and — for a conference profile — the overnight line with Top off now / In for the night / Leaving at">
+</p>
+<p align="center">
+  <img src="media/applet-popup-revert-warning.png" width="520" alt="The popup an hour before an auto-revert: the countdown with the Extend 24 h button">
 </p>
 
 ### Configuring from the applet
@@ -404,8 +480,10 @@ Right-click the widget → Configure. Four pages:
   expanded, and whether to raise notifications. Saved in the applet's own
   KConfig.
 - **Profiles** — pick a profile, add one as a copy, delete one (`daily` and
-  the active profile are protected), and edit its label, type (balancing or
-  fixed), bands, auto-revert triggers and per-slot pins.
+  the active profile are protected), and edit its label, type (balancing,
+  fixed or Conference), bands, auto-revert triggers, per-slot pins, and —
+  for the Conference type — the overnight fields (mode, `night_from`,
+  `leave_at`, hold band, margin).
 - **Packs** — rename, retire or un-retire packs, and answer pending identity
   questions.
 - **General** — balance deadband, automatic balancing, bench temperature.
@@ -431,9 +509,10 @@ immediately, one prompt each.
 
 The applet raises a desktop notification once per state event for: a
 pending pack identity question, an auto-revert firing, a firmware
-read-back mismatch, and a pack removed above 70%. They come from the
-applet (root has no session bus), so they need the widget running and lag
-by at most one poll interval. The event definitions live in
+read-back mismatch, a pack removed above 70%, a reverting profile within
+an hour of reverting (`revert-warning`), and the conference profile's
+timed top-off starting. They come from the applet (root has no session
+bus), so they need the widget running and lag by at most one poll interval. The event definitions live in
 `/usr/share/knotifications6/dell_battery_balance.notifyrc`, which
 `install.sh` places — re-run `sudo ./install.sh` when upgrading from 0.2,
 then restart the shell so the applet package reloads:
@@ -470,6 +549,10 @@ bit keeps new files in the service group):
   general.sample_log_years=10` to keep more.
 - `metrics.prom` — the Prometheus text exposition of `status`, rewritten
   atomically on every tick (see Monitoring below).
+- `wakealarm` — the epoch the conference profile wants the machine woken at
+  for its top-off, rewritten every tick (empty when nothing is pending).
+- `wakealarm.set` — root-owned marker of the alarm the wake helper actually
+  programmed, so it never clears an alarm something else set.
 
 Events carry an `id` (monotonic, never reused) since 0.3; a 0.2 state file
 gets its existing events numbered once on first load. `reset --all` keeps
@@ -514,6 +597,7 @@ needs no group membership. Series, all prefixed `dbb_`:
 | `dbb_slot_tenure_efc`, `dbb_slot_tenure_calendar_score`, `dbb_slot_mean_soc_percent`, `dbb_slot_time_ge90_percent`, `dbb_slot_in_slot_hours` | `slot` | the current tenure alone |
 | `dbb_profile_info`, `dbb_field_mode`, `dbb_ac_online`, `dbb_pending_questions`, `dbb_config_error`, `dbb_info` | `profile`,`type` / `version` | state of the tool itself |
 | `dbb_unplug_sessions_total`, `dbb_drain_first_total` | (`slot`) | counters behind the "EC reaches for first" line |
+| `dbb_overnight_phase`, `dbb_topoff_start_timestamp_seconds`, `dbb_leave_timestamp_seconds`, `dbb_revert_warning` | `phase` | the conference profile's overnight phase (one-hot), when the top-off starts and the departure it targets; 1 while the active profile reverts within the hour |
 
 Values that are unknown (an absent pack's temperature, a failed read-back's
 ceiling) are left out of the file rather than written as a placeholder, so
@@ -531,7 +615,12 @@ no per-unit identity) are all implemented, per
 The applet's config dialog and notifications landed in 0.3, completing the
 spec. 0.3.1 closed the follow-ups (`pack swap`, the two-sample removal
 guard, `--for` as a true override) and added the Prometheus export and
-sample-log retention. Nothing is queued; new work starts from an issue.
+sample-log retention. 0.4.0 added the conference profile (overnight hold,
+timed top-off through an RTC wake, quick actions), and the revert changes
+every reverting profile gets (the still-going-out guard, the hour-out
+warning with `profile extend`, `--until`), per
+[docs/superpowers/specs/2026-09-14-conference-overnight-design.md](docs/superpowers/specs/2026-09-14-conference-overnight-design.md).
+Nothing is queued; new work starts from an issue.
 
 ## Known limits
 
@@ -587,7 +676,7 @@ sample-log retention. Nothing is queued; new work starts from an issue.
 - More than ten qualifying events between two applet polls are marked seen
   without being raised: `status --json` carries only the last ten events,
   and the applet advances its notified-id watermark to the highest one it
-  sees, so anything older than that window is skipped silently. The four
+  sees, so anything older than that window is skipped silently. The six
   notified kinds are rare enough that this is unlikely to matter in practice.
 - With notifications switched off, the applet still advances its watermark,
   so events that happened while they were off are not raised when they are
@@ -596,6 +685,17 @@ sample-log retention. Nothing is queued; new work starts from an issue.
   page opened, so a profile switch that happens while the dialog is open (a
   popup button, an auto-revert) is overwritten by Apply — reopen the dialog
   after switching.
+- **The firmware cannot lower a full pack.** A conference night that starts
+  in `charging_full` and reaches 100% before `night_from` is a full float;
+  `night` (or an earlier `night_from`) is the fix, not software.
+- **The RTC alarm does not wake from hibernate**, and the re-suspend after a
+  top-off wake needs the lid closed — a closed-lid docked setup will be put
+  back to sleep unless `general.topoff_resuspend = false`.
+- **The top-off estimate** assumes design capacity is full (this firmware
+  never moves `charge_full`) and a constant-current charge at the logged
+  median; `margin_min` covers the tail. A cold pack or a weak charger can
+  still run late.
+- **The still-going-out guard** is fixed at a 30-minute stint within 24 hours.
 
 ## Tests
 
@@ -603,26 +703,32 @@ sample-log retention. Nothing is queued; new work starts from an issue.
 python3 -m unittest discover -s tests -v
 ```
 
-211 tests across ten files (`test_wear_model.py`, `test_policy.py`,
+316 tests across twelve files (`test_wear_model.py`, `test_policy.py`,
 `test_config.py`, `test_apply.py`, `test_registry.py`, `test_cli.py`,
 `test_state.py`, `test_cli_surface.py`, `test_applet_package.py`,
-`test_metrics.py`), all against a fake `/sys` tree and
-temp state/config dirs (`DBB_SYSFS_ROOT`, `DBB_STATE_DIR`, `DBB_CONFIG_DIR`)
-— never real hardware or files. Coverage includes: three full
-sequential-discharge cycles, asserting the pack doing the draining
-accumulates more EFC, the idle pack accumulates more calendar score, the
-drain-order detector credits one event per unplug, the deadband holds
-near-equal packs neutral, and bands clamp to the firmware's limits; the
-policy engine's role/band/pin/revert resolution; config schema validation
-and `set_dotted` coercion; firmware apply/read-back and mismatch recording;
-the pack registry's tenure lifecycle, swap detection (including both packs
-pulled and reinserted swapped) and identity guessing, totals/rotation-hint
-math with bench calendar-aging carried across a reinsertion, and
-version-1-to-2 state migration; the full CLI surface, including profile
-switching, `--for` one-off reverts, config get/set/validate/apply
-strictness (both TOML and `--json`), the `pack ...` subcommands and
-`reset --pack`, the `report` tenure table, the per-year sample-log rotation,
-and the polkit-class gate (control vs. pack-admin/configure); and
+`test_metrics.py`, `test_overnight.py`, `test_wake_helper.py`), all against
+a fake `/sys` tree and temp state/config dirs (`DBB_SYSFS_ROOT`,
+`DBB_STATE_DIR`, `DBB_CONFIG_DIR`) — never real hardware or files. Coverage
+includes: three full sequential-discharge cycles, asserting the pack doing
+the draining accumulates more EFC, the idle pack accumulates more calendar
+score, the drain-order detector credits one event per unplug, the deadband
+holds near-equal packs neutral, and bands clamp to the firmware's limits;
+the policy engine's role/band/pin/revert resolution; config schema
+validation and `set_dotted` coercion; firmware apply/read-back and mismatch
+recording; the pack registry's tenure lifecycle, swap detection (including
+both packs pulled and reinserted swapped) and identity guessing,
+totals/rotation-hint math with bench calendar-aging carried across a
+reinsertion, and version-1-to-2 state migration; the full CLI surface,
+including profile switching, `--for`/`--until` one-off reverts, config
+get/set/validate/apply strictness (both TOML and `--json`), the `pack ...`
+subcommands and `reset --pack`, the `report` tenure table, the per-year
+sample-log rotation, and the polkit-class gate (control vs.
+pack-admin/configure); the overnight state machine's four phases and its
+manual `topoff`/`night` overrides, the charging-current ring and sequential
+top-off estimate, `leave-at`'s override-then-consumed lifecycle, and the
+wakealarm text written while holding; the wake helper (`libexec/dell-battery-balance-wake`)
+programming and clearing the RTC alarm, never touching one it did not set,
+and re-suspending only with the lid closed and `topoff_resuspend` true; and
 `test_cli_surface.py`, which parses the README's CLI reference table and
 asserts every documented form actually parses and every parser subcommand
 is documented, so the two cannot drift apart silently.
