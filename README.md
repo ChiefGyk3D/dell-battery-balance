@@ -711,7 +711,7 @@ Nothing is queued; new work starts from an issue.
 python3 -m unittest discover -s tests -v
 ```
 
-316 tests across twelve files (`test_wear_model.py`, `test_policy.py`,
+325 tests across twelve files (`test_wear_model.py`, `test_policy.py`,
 `test_config.py`, `test_apply.py`, `test_registry.py`, `test_cli.py`,
 `test_state.py`, `test_cli_surface.py`, `test_applet_package.py`,
 `test_metrics.py`, `test_overnight.py`, `test_wake_helper.py`), all against
