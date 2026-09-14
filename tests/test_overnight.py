@@ -1,4 +1,4 @@
-import os, sys, time, unittest
+import copy, os, sys, time, unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 
 
@@ -280,6 +280,25 @@ class Machine(TZBase):
         self.ov.set_leave_at(self.state, "06:00", self.at(20, 0))
         self.policy.switch_profile(self.cfg, self.state, "daily", self.at(20, 1), "test")
         self.assertIsNone(self.state["overnight"]["leave_at_override_ts"])
+
+    def test_switch_between_two_conference_profiles_resets_the_phase(self):
+        # I3: defcon's in-progress topping/manual state must not carry over
+        # to grrcon, and grrcon must be free to enter its own hold.
+        self.ov.step(self.cfg, self.state, self.both(), self.at(20, 0))
+        self.assertEqual(self.state["overnight"]["phase"], "charging_full")
+        self.ov.set_manual(self.state, "topoff")
+        self.assertEqual(self.ov.step(self.cfg, self.state, self.both(), self.at(20, 1)), "topping")
+
+        self.cfg["profiles"]["grrcon"] = copy.deepcopy(self.cfg["profiles"]["conference"])
+        self.cfg["profiles"]["grrcon"]["overnight"]["night_from"] = "19:00"
+
+        self.policy.switch_profile(self.cfg, self.state, "grrcon", self.at(20, 1), "test")
+        self.assertEqual(self.state["overnight"]["phase"], "off")
+        self.assertIsNone(self.state["overnight"]["manual"])
+        self.assertTrue(any(e["kind"] == "overnight" and "overnight off" in e["detail"]
+                            for e in self.state["events"]))
+
+        self.assertEqual(self.ov.step(self.cfg, self.state, self.both(), self.at(20, 2)), "holding")
 
     def test_wakealarm_text_only_while_holding(self):
         self.assertEqual(self.ov.wakealarm_text(self.state), "")

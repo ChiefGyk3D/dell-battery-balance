@@ -167,6 +167,18 @@ def _reset(ov):
     ov.update(phase="off", since_ts=None, topoff_start_ts=None, leave_ts=None, manual=None)
 
 
+def reset(state):
+    """Idle the overnight machine AND drop any leave-at override. Used by
+    policy.switch_profile when switching to a different profile, so that
+    switching between two conference profiles (or away from one) never
+    leaves a stale phase/manual flag/override behind for the new profile to
+    inherit."""
+    ov = ensure(state)
+    _reset(ov)
+    ov["leave_at_override_ts"] = None
+    return ov
+
+
 def _enter(state, ov, phase, now_ts, detail):
     ov["phase"] = phase
     ov["since_ts"] = now_ts

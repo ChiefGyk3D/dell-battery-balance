@@ -1023,6 +1023,44 @@ class Overnight(CliBase):
         self.assertTrue(j["field_mode"])
         self.assertEqual(j["profile"]["type"], "conference")
 
+    def test_switching_to_a_plain_profile_clears_the_overnight_phase(self):
+        # I3: a topping conference profile switched away from must not leave
+        # its phase/manual flag behind for whatever profile comes next.
+        with mock.patch("time.time", return_value=self.at(23, 30)):
+            self.run_cli("tick")
+            code, _, err = self.run_cli("topoff", "now")
+            self.assertEqual(code, 0, err)
+        code, _, err = self.run_cli("profile", "set", "field")
+        self.assertEqual(code, 0, err)
+        j = self.status()
+        self.assertEqual(j["overnight"]["phase"], "off")
+
+    def test_tick_reverts_out_of_conference_and_clears_overnight(self):
+        with mock.patch("time.time", return_value=self.at(23, 30)):
+            code, _, err = self.run_cli("profile", "set", "conference", "--for", "1h")
+            self.assertEqual(code, 0, err)
+            code, _, err = self.run_cli("tick")
+            self.assertEqual(code, 0, err)
+        j = self.status()
+        self.assertEqual(j["overnight"]["phase"], "holding")
+        self.assertTrue(self.wakealarm())
+
+        state_path = os.path.join(os.environ["DBB_STATE_DIR"], "state.json")
+        with open(state_path) as fh:
+            st = json.load(fh)
+        st["profile_switched_ts"] -= 2 * 3600
+        with open(state_path, "w") as fh:
+            json.dump(st, fh)
+
+        with mock.patch("time.time", return_value=self.at(23, 30)):
+            code, _, err = self.run_cli("tick")
+            self.assertEqual(code, 0, err)
+        j = self.status()
+        self.assertEqual(j["profile"]["name"], "daily")
+        self.assertEqual(j["overnight"]["phase"], "off")
+        self.assertEqual(self.wakealarm(), "")
+        self.assertEqual(self.stop_value("BAT1"), "80")
+
     def test_status_json_for_a_plain_profile(self):
         self.run_cli("profile", "set", "daily")
         j = self.status()
