@@ -107,5 +107,25 @@ class Render(unittest.TestCase):
         self.assertNotIn(" nan", t.lower())
 
 
+class OvernightSeries(unittest.TestCase):
+    def test_phase_one_hot_and_timestamps(self):
+        j = view()
+        j["overnight"] = {"active": True, "mode": "topoff", "phase": "holding", "topoff_start_ts": 1789400000,
+                          "leave_ts": 1789405400}
+        j["revert"] = {"warning": True}
+        text = metrics.render_prometheus(j)
+        self.assertIn('dbb_overnight_phase{phase="holding"} 1', text)
+        self.assertIn('dbb_overnight_phase{phase="off"} 0', text)
+        self.assertIn("dbb_topoff_start_timestamp_seconds 1789400000", text)
+        self.assertIn("dbb_leave_timestamp_seconds 1789405400", text)
+        self.assertIn("dbb_revert_warning 1", text)
+
+    def test_absent_overnight_emits_off(self):
+        text = metrics.render_prometheus(view())
+        self.assertIn('dbb_overnight_phase{phase="off"} 1', text)
+        self.assertNotIn("dbb_topoff_start_timestamp_seconds", text)
+        self.assertIn("dbb_revert_warning 0", text)
+
+
 if __name__ == "__main__":
     unittest.main()

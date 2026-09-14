@@ -61,6 +61,26 @@ def _revert_info(cfg, state, name, prof, now):
     }
 
 
+def _overnight_json(prof, state, s, now):
+    o = prof.get("overnight")
+    empty = {"active": False, "mode": None, "phase": "off", "text": None, "actions": False,
+             "hold": None, "leave_at": None, "night_from": None, "leave_ts": None,
+             "topoff_start_ts": None, "estimate_s": None, "manual": None, "leave_at_override_ts": None}
+    if not o:
+        return empty
+    ov = overnight.ensure(state)
+    topoff = o["mode"] == "topoff"
+    return {
+        "active": topoff, "mode": o["mode"], "phase": ov["phase"] if topoff else "off",
+        "hold": list(o["hold"]), "leave_at": o["leave_at"], "night_from": o["night_from"],
+        "leave_ts": ov["leave_ts"], "topoff_start_ts": ov["topoff_start_ts"],
+        "estimate_s": (round(overnight.estimate_topoff_s(state, s, o["margin_min"])) if s["bats"] else None),
+        "manual": ov["manual"], "leave_at_override_ts": ov["leave_at_override_ts"],
+        "text": overnight.describe(prof, state, s, now),
+        "actions": topoff and s["ac_online"] == 1,
+    }
+
+
 def _display_efc_cal(state, t, now, bench_temp_c):
     """(efc, calendar_score) to SHOW for slot's open tenure `t`: the pack
     total when identified (what the policy actually balances on), else the
@@ -99,6 +119,9 @@ def fmt_status(state, s, cfg):
             if rv["guard_blocking"]:
                 ago = (now - rv["last_battery_stint_end_ts"]) / 3600.0
                 lines.append(f"on-AC revert held: on battery {ago:.0f}h ago (still going out daily)")
+    ov_line = overnight.describe(profile, state, s, now)
+    if ov_line:
+        lines.append(ov_line)
     lines.append("")
 
     hdr = f"{'':6} {'now':>20} {'EFC':>7} {'discharged':>12} {'cal.score':>10} {'mean SoC':>9} {'>=90%':>8}"
@@ -204,7 +227,7 @@ def state_json(state, s, cfg):
         "sessions": state.get("sessions", 0),
         "drain_first": state.get("discharge_first", {}),
         "policy": state.get("policy"),
-        "field_mode": profile_type(prof) == "fixed" and prof["bands"]["all"][1] >= 95,
+        "field_mode": profile_type(prof) in ("fixed", "conference") and prof["bands"]["all"][1] >= 95,
     }
 
     slot_vals = {}
@@ -273,8 +296,7 @@ def state_json(state, s, cfg):
     out["profiles"] = [{"name": n, "label": p["label"], "type": profile_type(p), "active": n == name}
                        for n, p in sorted(cfg["profiles"].items())]
     out["revert"] = _revert_info(cfg, state, name, prof, now)
-    ov = overnight.ensure(state)
-    out["overnight"] = {"phase": ov["phase"], "topoff_start_ts": ov["topoff_start_ts"]}
+    out["overnight"] = _overnight_json(prof, state, s, now)
     out["firmware"] = state.get("firmware", {})
     out["config_error"] = state.get("config_error")
     out["events"] = state.get("events", [])[-10:]

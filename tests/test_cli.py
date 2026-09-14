@@ -1002,6 +1002,36 @@ class Overnight(CliBase):
             st = json.load(fh)
         self.assertIsNotNone(st["overnight"]["leave_at_override_ts"])
 
+    def test_status_json_and_text_carry_the_overnight_view(self):
+        with mock.patch("time.time", return_value=self.at(23, 30)):
+            self.run_cli("tick")
+            j = self.status()
+            code, out, _ = self.run_cli("status")
+        self.assertEqual(code, 0)
+        ov = j["overnight"]
+        self.assertTrue(ov["active"])
+        self.assertEqual(ov["mode"], "topoff")
+        self.assertEqual(ov["phase"], "holding")
+        self.assertEqual(ov["hold"], [70, 80])
+        self.assertEqual(ov["leave_at"], "07:00")
+        self.assertEqual(ov["night_from"], "23:00")
+        self.assertTrue(ov["actions"])
+        self.assertIsNone(ov["manual"])
+        self.assertGreater(ov["estimate_s"], 1800)
+        self.assertTrue(ov["text"].startswith("overnight: holding 70/80"))
+        self.assertIn(ov["text"], out)
+        self.assertTrue(j["field_mode"])
+        self.assertEqual(j["profile"]["type"], "conference")
+
+    def test_status_json_for_a_plain_profile(self):
+        self.run_cli("profile", "set", "daily")
+        j = self.status()
+        self.assertEqual(j["overnight"], {"active": False, "mode": None, "phase": "off", "text": None,
+                                          "actions": False, "hold": None, "leave_at": None, "night_from": None,
+                                          "leave_ts": None, "topoff_start_ts": None, "estimate_s": None,
+                                          "manual": None, "leave_at_override_ts": None})
+        self.assertFalse(j["field_mode"])
+
 
 class Until(unittest.TestCase):
     def setUp(self):

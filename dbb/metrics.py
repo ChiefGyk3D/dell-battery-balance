@@ -70,6 +70,16 @@ def render_prometheus(j):
         o.add("dbb_profile_info", "Active profile and its type.", 1,
               {"profile": prof["name"], "type": prof.get("type", "")})
     o.add("dbb_field_mode", "1 when the active profile floats both packs at 95% or above.", j.get("field_mode"))
+    ov = j.get("overnight") or {}
+    phase = ov.get("phase") or "off"
+    for ph in ("off", "charging_full", "holding", "topping"):
+        o.add("dbb_overnight_phase", "1 for the conference profile's current overnight phase.",
+              1 if phase == ph else 0, {"phase": ph})
+    o.add("dbb_topoff_start_timestamp_seconds", "When the timed top-off is due to start (while holding).",
+          ov.get("topoff_start_ts"))
+    o.add("dbb_leave_timestamp_seconds", "Departure time the top-off targets.", ov.get("leave_ts"))
+    o.add("dbb_revert_warning", "1 when the active profile auto-reverts within the hour.",
+          1 if (j.get("revert") or {}).get("warning") else 0)
     o.add("dbb_config_error", "1 when the config file failed to load and a snapshot is in use.",
           1 if j.get("config_error") else 0)
     o.add("dbb_pending_questions", "Slots waiting for a pack-identity answer.", len(j.get("pending") or {}))
