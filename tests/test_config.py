@@ -150,6 +150,13 @@ class Validation(unittest.TestCase):
         self.cfg["profiles"]["field"]["revert"]["typo"] = 1
         self.assertRejects("profiles.field.revert.typo")
 
+    def test_revert_null_rejected(self):
+        # A JSON candidate ("config apply --json") can carry an explicit
+        # null; .get(..) is not None used to let it silently pass validate()
+        # and blow up later in profile_type()/emit().
+        self.cfg["profiles"]["field"]["revert"] = None
+        self.assertRejects("profiles.field.revert: must be a table")
+
 
 class LoadSave(unittest.TestCase):
     def test_load_missing_returns_default(self):
@@ -294,6 +301,10 @@ class OvernightValidation(unittest.TestCase):
         self.ov["mode"] = "full"
         self.ov["leave_at"] = "nope"
         self.assertRejects("profiles.conference.overnight.leave_at")
+
+    def test_overnight_null_rejected(self):
+        self.cfg["profiles"]["conference"]["overnight"] = None
+        self.assertRejects("profiles.conference.overnight: must be a table")
 
 
 class OvernightEditing(unittest.TestCase):

@@ -80,7 +80,7 @@ def default_config():
 
 
 def profile_type(profile):
-    if "overnight" in profile:
+    if profile.get("overnight"):
         return "conference"
     return "fixed" if "all" in profile.get("bands", {}) else "balancing"
 
@@ -163,8 +163,10 @@ def validate(cfg):
                 raise ConfigError(f"{base}.bands: unknown roles {sorted(set(bands) - set(ROLES))}")
             if not p["balancing"]:
                 raise ConfigError(f"{base}.balancing: must be true for a balancing profile")
-        rv = p.get("revert")
-        if rv is not None:
+        if "revert" in p:
+            rv = p["revert"]
+            if not isinstance(rv, dict):
+                raise ConfigError(f"{base}.revert: must be a table")
             for k in rv:
                 if k not in REVERT_KEYS:
                     raise ConfigError(f"{base}.revert.{k}: unknown key")
@@ -194,8 +196,8 @@ def validate(cfg):
                 if set(pin) != {"start", "stop"}:
                     raise ConfigError(f"{pb}: needs both start and stop")
                 _band(pb, [pin["start"], pin["stop"]])
-        ov = p.get("overnight")
-        if ov is not None:
+        if "overnight" in p:
+            ov = p["overnight"]
             ob = f"{base}.overnight"
             if not isinstance(ov, dict):
                 raise ConfigError(f"{ob}: must be a table")
