@@ -986,6 +986,22 @@ class Overnight(CliBase):
             code, _, _ = self.run_cli("--polkit-class", "control", "--", "night")
         self.assertEqual(code, 0)
 
+    def test_leave_at_exits_2_on_firmware_write_error(self):
+        # Make a sysman attribute unwritable to simulate a firmware write failure
+        p = os.path.join(os.environ["DBB_SYSFS_ROOT"], "class/firmware-attributes/dell-wmi-sysman/attributes/SliceBattCustomChargeStop/current_value")
+        os.chmod(p, 0o444)
+        self._mode_restore.append(p)
+        with mock.patch("time.time", return_value=self.at(23, 30)):
+            self.run_cli("tick")
+            code, out, err = self.run_cli("leave-at", "06:00")
+        self.assertEqual(code, 2)
+        self.assertIn("BAT1", err)
+        # Override is still saved despite write failure
+        state_path = os.path.join(os.environ["DBB_STATE_DIR"], "state.json")
+        with open(state_path) as fh:
+            st = json.load(fh)
+        self.assertIsNotNone(st["overnight"]["leave_at_override_ts"])
+
 
 if __name__ == "__main__":
     unittest.main()

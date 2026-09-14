@@ -491,9 +491,14 @@ def cmd_leave_at(args):
             die(f"error: {e}")
         add_event(state, "overnight", f"leaving at {time.strftime('%a %H:%M', time.localtime(ts))}")
     if s["ac_online"] == 1:
-        _step_resolve_apply(cfg, state, s, now)
+        _, r = _step_resolve_apply(cfg, state, s, now)
+    else:
+        r = {"errors": {}}
     save_state(state)
     print(overnight.describe(prof, state, s, now))
+    for slot, e in r["errors"].items():
+        print(f"  {slot}: {e}", file=sys.stderr)
+    sys.exit(0 if not r["errors"] else 2)
 
 
 def _registry_op(fn, *a, needs_cfg=False, **kw):
