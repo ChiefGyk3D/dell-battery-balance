@@ -9,6 +9,7 @@ User=dell-battery-balance
 Group=dell-battery-balance
 ExecStartPre=+/usr/local/libexec/dell-battery-balance-grant
 ExecStart=/usr/local/bin/dell-battery-balance tick
+ExecStartPost=+/usr/local/libexec/dell-battery-balance-wake
 Nice=10
 IOSchedulingClass=idle
 ProtectSystem=strict

@@ -23,7 +23,15 @@ rm -f /etc/udev/rules.d/90-$SVC.rules
 rm -f /usr/share/polkit-1/actions/com.chiefgyk3d.dellbatterybalance.control.policy \
       /usr/share/polkit-1/actions/com.chiefgyk3d.dellbatterybalance.configure.policy
 rm -f /usr/share/knotifications6/dell_battery_balance.notifyrc
+
+# Clear an RTC alarm the tool set (the marker is its proof of ownership).
+if [[ -f /var/lib/$SVC/wakealarm.set && -w /sys/class/rtc/rtc0/wakealarm ]]; then
+    echo 0 > /sys/class/rtc/rtc0/wakealarm 2>/dev/null || true
+    rm -f /var/lib/$SVC/wakealarm.set
+fi
+
 rm -f /usr/local/libexec/dell-battery-balance-grant \
+      /usr/local/libexec/dell-battery-balance-wake \
       /usr/local/libexec/dbb-control \
       /usr/local/libexec/dbb-configure
 rm -f /usr/local/bin/dell-battery-balance

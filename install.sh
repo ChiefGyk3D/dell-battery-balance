@@ -27,6 +27,7 @@ python3 -m compileall -q /usr/local/lib/$SVC/dbb
 chmod -R a+rX /usr/local/lib/$SVC
 install -Dm755 "$src/dell-battery-balance" /usr/local/bin/dell-battery-balance
 install -Dm755 "$src/libexec/dell-battery-balance-grant" /usr/local/libexec/dell-battery-balance-grant
+install -Dm755 "$src/libexec/dell-battery-balance-wake"  /usr/local/libexec/dell-battery-balance-wake
 install -Dm755 "$src/libexec/dbb-control"   /usr/local/libexec/dbb-control
 install -Dm755 "$src/libexec/dbb-configure" /usr/local/libexec/dbb-configure
 install -Dm644 "$src/README.md" /usr/local/share/doc/$SVC/README.md

@@ -1,0 +1,75 @@
+#!/bin/sh
+# The second and last piece of root code in dell-battery-balance, run as
+# ExecStartPost=+ after every tick. It turns the service's wake request
+# (STATE_DIR/wakealarm: an epoch while the conference profile is holding,
+# empty otherwise) into an RTC alarm, clears only alarms it set itself
+# (STATE_DIR/wakealarm.set is the proof of ownership), and after a wake it
+# caused -- lid still closed, config not opting out -- puts the machine back
+# to sleep. Every path is bounded: 32 bytes read, integer only, at most 24 h
+# ahead, never in the past.
+set -u
+STATE=${DBB_STATE_DIR:-/var/lib/dell-battery-balance}
+RTC=${DBB_RTC_PATH:-/sys/class/rtc/rtc0/wakealarm}
+LID_GLOB=${DBB_LID_GLOB:-/proc/acpi/button/lid/*/state}
+CONFIG=${DBB_CONFIG_FILE:-/etc/dell-battery-balance/config.toml}
+SUSPEND=${DBB_SUSPEND_CMD:-systemctl suspend --no-block}
+REQ=$STATE/wakealarm
+MARK=$STATE/wakealarm.set
+RESUSPEND_WINDOW=180
+
+now=$(date +%s)
+
+want=""
+if [ -f "$REQ" ]; then
+    v=$(head -c 32 "$REQ" | tr -d '[:space:]')
+    case "$v" in
+        ''|*[!0-9]*) v="" ;;
+    esac
+    if [ -n "$v" ] && [ "$v" -gt "$now" ] && [ $((v - now)) -le 86400 ]; then
+        want=$v
+    fi
+fi
+
+have=""
+if [ -f "$MARK" ]; then
+    have=$(head -c 32 "$MARK" | tr -d '[:space:]')
+    case "$have" in
+        ''|*[!0-9]*) have="" ;;
+    esac
+fi
+
+if [ -n "$want" ]; then
+    if [ "$want" != "$have" ] && [ -w "$RTC" ]; then
+        # A pending alarm must be cleared before a new one is accepted.
+        echo 0 > "$RTC" 2>/dev/null
+        if echo "$want" > "$RTC" 2>/dev/null; then
+            printf '%s\n' "$want" > "$MARK"
+        fi
+    fi
+    exit 0
+fi
+
+[ -n "$have" ] || exit 0
+
+if [ "$now" -ge "$have" ] && [ $((now - have)) -le "$RESUSPEND_WINDOW" ]; then
+    # Our alarm just fired and the tick has moved on (no request left).
+    rm -f "$MARK"
+    lid_closed=0
+    for f in $LID_GLOB; do
+        [ -f "$f" ] && grep -q closed "$f" && lid_closed=1
+    done
+    resuspend=1
+    if [ -s "$CONFIG" ] && head -c 65536 "$CONFIG" | grep -Eq '^topoff_resuspend *= *false'; then
+        resuspend=0
+    fi
+    if [ "$lid_closed" -eq 1 ] && [ "$resuspend" -eq 1 ]; then
+        $SUSPEND
+    fi
+    exit 0
+fi
+
+# The request went away before the alarm fired (unplugged, topped off by
+# hand, profile changed): clear the alarm we set.
+[ -w "$RTC" ] && echo 0 > "$RTC" 2>/dev/null
+rm -f "$MARK"
+exit 0
