@@ -250,15 +250,16 @@ does not recognize even though it is valid, equivalent TOML.
 | `profile list` | show all profiles, marking the active one |
 | `profile show <name>` | print one profile's TOML |
 | `profile <name>` | shortcut for `profile set <name>` |
-| `profile set <name> [--for <duration> \| --stay]` | switch profiles and apply immediately; `--for` reverts after that long and `--stay` never, either one replacing the profile's own triggers for this switch |
+| `profile set <name> [--for <duration> \| --until <when> \| --stay]` | switch profiles and apply immediately; `--for` reverts after that long, `--until` at a local date/time (`2026-08-10`, `2026-08-10 07:00`, `07:00`), `--stay` never — any of them replacing the profile's own triggers for this switch |
 | `profile create <name> --from <name> \| --template <builtin>` | clone an existing profile, or start from a shipped default (`conference`, `field`, `travel`, `storage`, `daily`) that an older config.toml may not have |
 | `profile edit <name> key=value ...` | change one profile's fields; `revert=none` or `revert.after_hours=none` remove auto-revert |
 | `profile delete <name>` | remove a profile (not `daily`, not the active one) |
+| `profile extend <duration>` | push the active profile's auto-revert out by that long (the on-AC clock restarts too); refused when nothing would revert |
 | `config get [key] [--json]` | print the whole config or one dotted key; `--json` is what the applet's config dialog reads |
 | `config set key=value ...` | change `general.*` or `profiles.*` fields |
 | `config validate [--json] <path>` | check a candidate file without writing anything |
 | `config apply [--json] <path>` | replace the whole config from a TOML file, or with `--json` a JSON document of the same shape (must be complete and valid) |
-| `field [--for <duration> \| --stay]` | alias: `profile set field` |
+| `field [--for <duration> \| --until <when> \| --stay]` | alias: `profile set field` |
 | `restore` | alias: `profile set <previous_profile>` |
 | `topoff now` | conference profile: lift the overnight hold now, charge both packs to 100% and stay there until unplugged — for going back out to the CTF |
 | `night` | conference profile: in for the night — start the hold now instead of waiting for `night_from` |

@@ -18,6 +18,8 @@ DOCUMENTED = [
     ["profile", "list"], ["profile", "show", "daily"],
     ["profile", "set", "field"], ["profile", "set", "field", "--for", "8h"],
     ["profile", "set", "field", "--stay"], ["profile", "field"],
+    ["profile", "set", "field", "--until", "2026-08-10"], ["field", "--until", "2026-08-10 07:00"],
+    ["profile", "extend", "24h"],
     ["profile", "create", "trip", "--from", "travel"],
     ["profile", "create", "defcon", "--template", "conference"],
     ["profile", "edit", "field", "revert.after_hours=120"], ["profile", "edit", "field", "revert=none"],

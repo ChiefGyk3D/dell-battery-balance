@@ -47,11 +47,17 @@ def _revert_info(cfg, state, name, prof, now):
         after, on_ac, stay = (one_off or None), None, one_off == 0
     else:
         after, on_ac, stay = rv.get("after_hours"), rv.get("on_ac_hours"), False
+    eta = policy.revert_eta(prof or {}, state, now)
+    on_ac_expired = bool(on_ac and run is not None and (now - run) / 3600.0 >= on_ac)
     return {
         "to": policy.resolve_revert_target(cfg, name),
         "stay": stay,
         "after_hours_left": (after - (now - switched) / 3600.0) if (after and switched is not None) else None,
         "on_ac_hours_left": (on_ac - (now - run) / 3600.0) if (on_ac and run is not None) else None,
+        "eta_hours": eta,
+        "warning": policy.revert_soon(prof or {}, state, now),
+        "guard_blocking": on_ac_expired and policy.active_day(state, now),
+        "last_battery_stint_end_ts": state.get("last_battery_stint_end_ts"),
     }
 
 
@@ -84,9 +90,15 @@ def fmt_status(state, s, cfg):
         if rv["stay"]:
             lines.append(f"revert: none - stays on {name} until you change it")
         else:
-            left = rv["after_hours_left"] if rv["after_hours_left"] is not None else rv["on_ac_hours_left"]
+            left = rv["eta_hours"]
             if left is not None:
-                lines.append(f"revert in {max(left, 0.0):.1f}h -> {rv['to']}")
+                line = f"revert in {max(left, 0.0):.1f}h -> {rv['to']}"
+                if rv["warning"]:
+                    line += f"  (warning: reverts in {int(round(left * 60))}m - 'profile extend 24h' keeps it)"
+                lines.append(line)
+            if rv["guard_blocking"]:
+                ago = (now - rv["last_battery_stint_end_ts"]) / 3600.0
+                lines.append(f"on-AC revert held: on battery {ago:.0f}h ago (still going out daily)")
     lines.append("")
 
     hdr = f"{'':6} {'now':>20} {'EFC':>7} {'discharged':>12} {'cal.score':>10} {'mean SoC':>9} {'>=90%':>8}"

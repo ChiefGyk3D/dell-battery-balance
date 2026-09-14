@@ -1003,5 +1003,105 @@ class Overnight(CliBase):
         self.assertIsNotNone(st["overnight"]["leave_at_override_ts"])
 
 
+class Until(unittest.TestCase):
+    def setUp(self):
+        self._tz = os.environ.get("TZ")
+        os.environ["TZ"] = "America/New_York"
+        time.tzset()
+        for m in list(sys.modules):
+            if m.startswith("dbb"):
+                del sys.modules[m]
+        from dbb import cli
+        self.cli = cli
+        self.now = time.mktime((2026, 8, 5, 20, 0, 0, 0, 0, -1))
+
+    def tearDown(self):
+        if self._tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = self._tz
+        time.tzset()
+
+    def test_date_means_end_of_that_day(self):
+        self.assertAlmostEqual(self.cli.parse_until("2026-08-10", self.now), (5 * 24 + 3) + 59 / 60, places=3)
+
+    def test_date_and_time(self):
+        self.assertAlmostEqual(self.cli.parse_until("2026-08-06 06:30", self.now), 10.5)
+        self.assertAlmostEqual(self.cli.parse_until("2026-08-06T06:30", self.now), 10.5)
+
+    def test_time_only_is_next_occurrence(self):
+        self.assertAlmostEqual(self.cli.parse_until("21:00", self.now), 1.0)
+        self.assertAlmostEqual(self.cli.parse_until("07:00", self.now), 11.0)
+
+    def test_past_and_garbage(self):
+        for bad in ("2026-08-01", "2026-08-05 19:00", "next week", ""):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.cli.parse_until(bad, self.now)
+
+
+class RevertFlex(CliBase):
+    def state_json(self):
+        with open(os.path.join(os.environ["DBB_STATE_DIR"], "state.json")) as fh:
+            return json.load(fh)
+
+    def write_state(self, st):
+        with open(os.path.join(os.environ["DBB_STATE_DIR"], "state.json"), "w") as fh:
+            json.dump(st, fh)
+
+    def test_until_arms_a_one_off(self):
+        code, out, err = self.run_cli("field", "--until", "2099-01-01")
+        self.assertEqual(code, 0, err)
+        st = self.state_json()
+        self.assertGreater(st["one_off_revert_hours"], 24 * 365 * 50)
+        code, _, err = self.run_cli("profile", "set", "field", "--until", "2000-01-01")
+        self.assertEqual(code, 1)
+        self.assertIn("in the past", err)
+
+    def test_until_for_stay_are_exclusive(self):
+        code, _, _ = self.run_cli("field", "--until", "2099-01-01", "--for", "1h")
+        self.assertEqual(code, 2)
+
+    def test_warning_event_once_per_switch_and_extend_clears_it(self):
+        code, _, err = self.run_cli("field", "--for", "2h")
+        self.assertEqual(code, 0, err)
+        st = self.state_json()
+        st["profile_switched_ts"] -= 1.5 * 3600
+        self.write_state(st)
+        self.run_cli("tick")
+        self.run_cli("tick")
+        evs = [e for e in self.state_json()["events"] if e["kind"] == "revert-warning"]
+        self.assertEqual(len(evs), 1)
+        self.assertIn("reverts in about 30 min", evs[0]["detail"])
+        j = self.status()
+        self.assertTrue(j["revert"]["warning"])
+        code, out, err = self.run_cli("profile", "extend", "24h")
+        self.assertEqual(code, 0, err)
+        self.assertIn("extended", out)
+        j = self.status()
+        self.assertFalse(j["revert"]["warning"])
+        self.assertGreater(j["revert"]["after_hours_left"], 24)
+        self.run_cli("tick")
+        evs = [e for e in self.state_json()["events"] if e["kind"] == "revert-warning"]
+        self.assertEqual(len(evs), 1)
+
+    def test_extend_refuses_with_nothing_to_extend(self):
+        code, _, err = self.run_cli("profile", "extend", "1h")
+        self.assertEqual(code, 1)
+        self.assertIn("nothing to extend", err)
+
+    def test_guard_shows_in_status(self):
+        self.run_cli("field")
+        st = self.state_json()
+        st["ac_run_start_ts"] = time.time() - 13 * 3600
+        st["last_battery_stint_end_ts"] = time.time() - 3600
+        self.write_state(st)
+        code, out, _ = self.run_cli("status")
+        self.assertEqual(code, 0)
+        self.assertIn("on-AC revert held: on battery 1h ago", out)
+        j = self.status()
+        self.assertTrue(j["revert"]["guard_blocking"])
+        self.assertEqual(j["profile"]["name"], "field")
+
+
 if __name__ == "__main__":
     unittest.main()

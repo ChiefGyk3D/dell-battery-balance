@@ -175,6 +175,35 @@ class SamplesCounter(unittest.TestCase):
         self.assertEqual(registry.slot_counters(s, "BAT0")["samples"], 1)
 
 
+class BatteryStintTracking(unittest.TestCase):
+    def setUp(self):
+        for m in list(sys.modules):
+            if m.startswith("dbb"):
+                del sys.modules[m]
+        from dbb import wear, state as st
+        self.wear, self.state = wear, st.new_state()
+
+    def s(self, ts, ac):
+        return {"ts": ts, "ac_online": ac, "bats": {}}
+
+    def test_short_battery_run_does_not_count(self):
+        self.wear._track_ac_run(self.state, None, self.s(0, 1))
+        self.wear._track_ac_run(self.state, self.s(0, 1), self.s(100, 0))
+        self.wear._track_ac_run(self.state, self.s(100, 0), self.s(100 + 20 * 60, 1))
+        self.assertIsNone(self.state["last_battery_stint_end_ts"])
+        self.assertIsNone(self.state["battery_run_start_ts"])
+
+    def test_thirty_minute_stint_is_recorded_when_ac_returns(self):
+        self.wear._track_ac_run(self.state, None, self.s(0, 1))
+        self.wear._track_ac_run(self.state, self.s(0, 1), self.s(100, 0))
+        self.assertEqual(self.state["battery_run_start_ts"], 100)
+        end = 100 + 30 * 60
+        self.wear._track_ac_run(self.state, self.s(100, 0), self.s(end, 1))
+        self.assertEqual(self.state["last_battery_stint_end_ts"], end)
+        self.assertIsNone(self.state["battery_run_start_ts"])
+        self.assertEqual(self.state["ac_run_start_ts"], end)
+
+
 class Events(unittest.TestCase):
     def test_bounded(self):
         from dbb import state as st

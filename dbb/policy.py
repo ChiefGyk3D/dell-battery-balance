@@ -16,6 +16,16 @@ from dbb import overnight, registry
 from dbb.config import profile_type
 from dbb.state import add_event
 from dbb.sysfs import BATS, clamp_band
+from dbb.wear import ACTIVE_DAY_STINT_MIN, ACTIVE_DAY_WINDOW_H
+
+
+class PolicyError(ValueError):
+    pass
+
+
+def active_day(state, now):
+    end = state.get("last_battery_stint_end_ts")
+    return end is not None and (now - end) < ACTIVE_DAY_WINDOW_H * 3600.0
 
 
 @dataclass
@@ -67,9 +77,52 @@ def revert_due(profile, state, now):
         return "after_hours"
     on_ac = rv.get("on_ac_hours")
     run = state.get("ac_run_start_ts")
-    if on_ac and run is not None and (now - run) / 3600.0 >= on_ac:
+    if on_ac and run is not None and (now - run) / 3600.0 >= on_ac and not active_day(state, now):
         return "on_ac_hours"
     return None
+
+
+def revert_eta(profile, state, now):
+    """Hours until the soonest live trigger fires; None when nothing will."""
+    switched = state.get("profile_switched_ts")
+    one_off = state.get("one_off_revert_hours")
+    if one_off is not None:
+        if one_off <= 0 or switched is None:
+            return None
+        return one_off - (now - switched) / 3600.0
+    rv = profile.get("revert") or {}
+    etas = []
+    if rv.get("after_hours") and switched is not None:
+        etas.append(rv["after_hours"] - (now - switched) / 3600.0)
+    run = state.get("ac_run_start_ts")
+    if rv.get("on_ac_hours") and run is not None and not active_day(state, now):
+        etas.append(rv["on_ac_hours"] - (now - run) / 3600.0)
+    return min(etas) if etas else None
+
+
+def revert_soon(profile, state, now, within_h=1.0):
+    eta = revert_eta(profile, state, now)
+    return eta is not None and 0.0 < eta <= within_h
+
+
+def extend(cfg, state, hours, now):
+    """Push the active profile's revert out by `hours`: the switch time moves
+    forward (both after_hours and a --for one-off measure from it) and the
+    on-AC clock restarts."""
+    name = cfg["general"]["active_profile"]
+    prof = cfg["profiles"][name]
+    one_off = state.get("one_off_revert_hours")
+    if one_off is None and not prof.get("revert"):
+        raise PolicyError(f"nothing to extend: {name} has no auto-revert")
+    if one_off is not None and one_off <= 0:
+        raise PolicyError(f"nothing to extend: {name} was switched with --stay")
+    if state.get("profile_switched_ts") is None:
+        state["profile_switched_ts"] = now
+    state["profile_switched_ts"] += hours * 3600.0
+    if state.get("ac_run_start_ts") is not None:
+        state["ac_run_start_ts"] = now
+    state["revert_warned_ts"] = None
+    add_event(state, "profile", f"{name}: revert extended by {hours:g}h")
 
 
 def resolve_revert_target(cfg, profile_name):
@@ -91,6 +144,7 @@ def switch_profile(cfg, state, name, now, reason):
     g["active_profile"] = name
     state["profile_switched_ts"] = now
     state["one_off_revert_hours"] = None
+    state["revert_warned_ts"] = None
     overnight.ensure(state)["leave_at_override_ts"] = None
     add_event(state, "profile", f"-> {name} ({reason})")
 

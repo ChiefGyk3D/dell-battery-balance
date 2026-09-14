@@ -153,6 +153,63 @@ class Revert(unittest.TestCase):
                                            now=2 * 3600.0 + 1), "after_hours")
         self.assertEqual(policy.resolve_revert_target(self.cfg, "travel"), "daily")
 
+    def test_on_ac_guarded_by_a_recent_battery_stint(self):
+        self.state["ac_run_start_ts"] = 100.0
+        self.state["last_battery_stint_end_ts"] = 100.0
+        now = 100.0 + 12 * 3600.0
+        self.assertIsNone(policy.revert_due(self.cfg["profiles"]["field"], self.state, now=now))
+        self.assertTrue(policy.active_day(self.state, now))
+        self.state["last_battery_stint_end_ts"] = now - 25 * 3600.0
+        self.assertEqual(policy.revert_due(self.cfg["profiles"]["field"], self.state, now=now), "on_ac_hours")
+
+    def test_guard_does_not_touch_after_hours(self):
+        self.state["last_battery_stint_end_ts"] = 72 * 3600.0
+        self.assertEqual(policy.revert_due(self.cfg["profiles"]["field"], self.state, now=72 * 3600.0 + 1), "after_hours")
+
+    def test_eta_and_soon(self):
+        f = self.cfg["profiles"]["field"]
+        self.assertAlmostEqual(policy.revert_eta(f, self.state, now=70 * 3600.0), 2.0)
+        self.assertFalse(policy.revert_soon(f, self.state, now=70 * 3600.0))
+        self.assertTrue(policy.revert_soon(f, self.state, now=71.5 * 3600.0))
+        self.assertFalse(policy.revert_soon(f, self.state, now=72.5 * 3600.0))   # already due, not "soon"
+        self.state["ac_run_start_ts"] = 60 * 3600.0
+        self.assertAlmostEqual(policy.revert_eta(f, self.state, now=71.5 * 3600.0), 0.5)   # on-AC is sooner
+        self.state["last_battery_stint_end_ts"] = 71 * 3600.0
+        self.assertAlmostEqual(policy.revert_eta(f, self.state, now=71.5 * 3600.0), 0.5)   # guard drops on-AC: after_hours left
+
+    def test_eta_for_one_off_and_stay(self):
+        f = self.cfg["profiles"]["field"]
+        self.state["one_off_revert_hours"] = 8
+        self.assertAlmostEqual(policy.revert_eta(f, self.state, now=6 * 3600.0), 2.0)
+        self.state["one_off_revert_hours"] = 0
+        self.assertIsNone(policy.revert_eta(f, self.state, now=6 * 3600.0))
+
+    def test_extend_moves_the_switch_forward_and_restarts_the_ac_clock(self):
+        self.state["ac_run_start_ts"] = 100.0
+        self.state["revert_warned_ts"] = 0.0
+        policy.extend(self.cfg, self.state, 24.0, now=1000.0)
+        self.assertEqual(self.state["profile_switched_ts"], 24 * 3600.0)
+        self.assertEqual(self.state["ac_run_start_ts"], 1000.0)
+        self.assertIsNone(self.state["revert_warned_ts"])
+        self.assertIn("extended by 24h", self.state["events"][-1]["detail"])
+        self.state["ac_run_start_ts"] = None
+        policy.extend(self.cfg, self.state, 1.0, now=2000.0)
+        self.assertIsNone(self.state["ac_run_start_ts"])
+
+    def test_extend_refuses_when_nothing_reverts(self):
+        policy.switch_profile(self.cfg, self.state, "daily", now=5.0, reason="test")
+        with self.assertRaises(policy.PolicyError):
+            policy.extend(self.cfg, self.state, 1.0, now=10.0)
+        policy.switch_profile(self.cfg, self.state, "field", now=20.0, reason="test")
+        self.state["one_off_revert_hours"] = 0.0
+        with self.assertRaises(policy.PolicyError):
+            policy.extend(self.cfg, self.state, 1.0, now=30.0)
+
+    def test_switch_clears_warning_marker(self):
+        self.state["revert_warned_ts"] = 1.0
+        policy.switch_profile(self.cfg, self.state, "daily", now=5.0, reason="test")
+        self.assertIsNone(self.state["revert_warned_ts"])
+
 
 class OneOffRevert(unittest.TestCase):
     def setUp(self):

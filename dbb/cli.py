@@ -30,7 +30,7 @@ CONFIGURE_CLASS = {"config", "profile-create", "profile-edit", "profile-delete",
 # good tick.
 EMPTY_SAMPLES_TO_CLOSE = 2
 
-PROFILE_SUBCOMMANDS = ("list", "show", "set", "create", "edit", "delete")
+PROFILE_SUBCOMMANDS = ("list", "show", "set", "create", "edit", "delete", "extend")
 
 
 def expand_profile_shortcut(argv):
@@ -61,15 +61,17 @@ def expand_profile_shortcut(argv):
 
 
 def _one_off_hours(args):
-    """--stay -> 0.0 (no automatic revert this switch); --for -> hours;
-    neither -> None (the profile's own [revert] table applies)."""
+    """--stay -> 0.0 (no automatic revert this switch); --for/--until ->
+    hours; none -> None (the profile's own [revert] table applies)."""
     if getattr(args, "stay", False):
         return 0.0
-    if getattr(args, "for_", None):
-        try:
+    try:
+        if getattr(args, "for_", None):
             return parse_duration(args.for_)
-        except ValueError as e:
-            die(f"error: {e}")
+        if getattr(args, "until", None):
+            return parse_until(args.until, time.time())
+    except ValueError as e:
+        die(f"error: {e}")
     return None
 
 
@@ -95,6 +97,30 @@ def parse_duration(text):
     if hours <= 0:
         raise ValueError(f"bad duration {text!r}; must be positive")
     return hours
+
+
+def parse_until(text, now_ts):
+    """`YYYY-MM-DD` (end of that local day), `YYYY-MM-DD HH:MM` /
+    `YYYY-MM-DDTHH:MM`, or `HH:MM` (next occurrence) -> hours from now_ts."""
+    t = (text or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d", "%H:%M"):
+        try:
+            d = datetime.strptime(t, fmt)
+        except ValueError:
+            continue
+        if fmt == "%H:%M":
+            lt = time.localtime(now_ts)
+            target = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, d.hour, d.minute, 0, 0, 0, -1))
+            if target <= now_ts:
+                target = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday + 1, d.hour, d.minute, 0, 0, 0, -1))
+        else:
+            h, m = (23, 59) if fmt == "%Y-%m-%d" else (d.hour, d.minute)
+            target = time.mktime((d.year, d.month, d.day, h, m, 0, 0, 0, -1))
+        hours = (target - now_ts) / 3600.0
+        if hours <= 0:
+            raise ValueError(f"{text!r} is in the past")
+        return hours
+    raise ValueError(f"bad time {text!r}; use YYYY-MM-DD, 'YYYY-MM-DD HH:MM' or HH:MM")
 
 
 def load_config_or_snapshot(state):
@@ -215,6 +241,14 @@ def cmd_tick(args):
     before = (state.get("overnight") or {}).get("phase", "off")
     phase = overnight.step(cfg, state, sample, now)
     res = policy.resolve(cfg, state, sample, now)     # bands now reflect the overnight phase
+    active = cfg["profiles"][cfg["general"]["active_profile"]]
+    if (policy.revert_soon(active, state, now)
+            and state.get("revert_warned_ts") != state.get("profile_switched_ts")):
+        state["revert_warned_ts"] = state.get("profile_switched_ts")
+        mins = int(round(policy.revert_eta(active, state, now) * 60))
+        add_event(state, "revert-warning",
+                  f"{cfg['general']['active_profile']} reverts in about {mins} min; "
+                  f"'profile extend 24h' keeps it")
     if cfg["general"]["auto_balance"] or reverted or phase != "off" or before != "off":
         _apply(cfg, state, sample, res)
     _write_wakealarm(state)
@@ -375,6 +409,17 @@ def cmd_profile_delete(args):
         cfg["general"]["previous_profile"] = "daily"
     _save_config(cfg, state, "deleting profile")
     save_state(state)
+
+
+def cmd_profile_extend(args):
+    state, cfg, _ = _view()
+    try:
+        hours = parse_duration(args.duration)
+        policy.extend(cfg, state, hours, time.time())
+    except (ValueError, policy.PolicyError) as e:
+        die(f"error: {e}")
+    save_state(state)
+    print(f"{cfg['general']['active_profile']}: revert extended by {args.duration}")
 
 
 def cmd_config_get(args):
@@ -634,6 +679,8 @@ def build_parser():
     g = sp.add_mutually_exclusive_group()
     g.add_argument("--for", dest="for_", metavar="DURATION",
                    help="revert after this long (90m, 8h, 3d), replacing the profile's own triggers for this switch")
+    g.add_argument("--until", metavar="WHEN",
+                   help="revert at this local time: YYYY-MM-DD (end of day), 'YYYY-MM-DD HH:MM', or HH:MM (next)")
     g.add_argument("--stay", action="store_true", help="no automatic revert for this switch")
     sp.set_defaults(func=cmd_profile_set, cls="control")
     sp = pr.add_parser("create"); sp.add_argument("name")
@@ -645,6 +692,8 @@ def build_parser():
     sp = pr.add_parser("edit"); sp.add_argument("name"); sp.add_argument("assignments", nargs="+", metavar="key=value")
     sp.set_defaults(func=cmd_profile_edit, cls="profile-edit")
     sp = pr.add_parser("delete"); sp.add_argument("name"); sp.set_defaults(func=cmd_profile_delete, cls="profile-delete")
+    sp = pr.add_parser("extend"); sp.add_argument("duration", metavar="DURATION")
+    sp.set_defaults(func=cmd_profile_extend, cls="control")
 
     cf = sub.add_parser("config", help="general settings").add_subparsers(dest="ccmd", required=True)
     sp = cf.add_parser("get"); sp.add_argument("key", nargs="?")
@@ -677,6 +726,7 @@ def build_parser():
     sp = sub.add_parser("field", help="alias: profile set field")
     g = sp.add_mutually_exclusive_group()
     g.add_argument("--for", dest="for_", metavar="DURATION")
+    g.add_argument("--until", metavar="WHEN")
     g.add_argument("--stay", action="store_true")
     sp.set_defaults(func=cmd_field, cls="control")
     sub.add_parser("restore", help="alias: profile set <previous>").set_defaults(func=cmd_restore, cls="control")

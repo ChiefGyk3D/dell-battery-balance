@@ -18,6 +18,11 @@ from dbb.sysfs import BATS
 # probably off or suspended.
 GAP_FLAG_SECONDS = 900
 
+# A battery stint at least this long within this window means "still going
+# out daily": the on-AC revert trigger does not fire during it (spec §5).
+ACTIVE_DAY_STINT_MIN = 30
+ACTIVE_DAY_WINDOW_H = 24
+
 
 def calendar_stress(soc_pct, temp_c):
     """Relative calendar-aging rate versus a 50% SoC / 25 C baseline.
@@ -58,7 +63,14 @@ def _track_ac_run(state, last, s):
     ac = s["ac_online"]
     if ac != 1:
         state["ac_run_start_ts"] = None
+        if state.get("battery_run_start_ts") is None:
+            state["battery_run_start_ts"] = s["ts"]
         return
+    start = state.get("battery_run_start_ts")
+    if start is not None:
+        if s["ts"] - start >= ACTIVE_DAY_STINT_MIN * 60:
+            state["last_battery_stint_end_ts"] = s["ts"]
+        state["battery_run_start_ts"] = None
     if last is None or last["ac_online"] != 1 or state.get("ac_run_start_ts") is None:
         # A gap with AC on both sides is still one run: the charger held SoC
         # the whole time, so the pack was floating throughout.
