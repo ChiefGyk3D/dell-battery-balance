@@ -79,7 +79,9 @@ PlasmaExtras.Representation {
                 Layout.fillWidth: true
                 visible: root.fieldMode
                 type: Kirigami.MessageType.Warning
-                text: i18n("Field mode is on. Both packs charge to 100%, so calendar-wear protection is disabled.")
+                text: (root.info && root.info.profile && root.info.profile.type === "conference")
+                    ? i18n("Conference mode is on. Both packs charge to 100% by day; calendar-wear protection is off except for the overnight hold.")
+                    : i18n("Field mode is on. Both packs charge to 100%, so calendar-wear protection is disabled.")
                 actions: [
                     Kirigami.Action {
                         text: i18n("Restore")
@@ -88,6 +90,60 @@ PlasmaExtras.Representation {
                         onTriggered: root.act("restore", false)
                     }
                 ]
+            }
+
+            // ---- conference overnight ----------------------------------
+            ColumnLayout {
+                id: overnightBox
+                Layout.fillWidth: true
+                readonly property var ov: (root.info && root.info.overnight && root.info.overnight.mode)
+                    ? root.info.overnight : null
+                visible: !!ov
+                spacing: Kirigami.Units.smallSpacing
+
+                PlasmaComponents.Label {
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    text: overnightBox.ov && overnightBox.ov.text ? overnightBox.ov.text : ""
+                }
+                RowLayout {
+                    visible: !!(overnightBox.ov && overnightBox.ov.actions)
+                    PlasmaComponents.Button {
+                        text: i18n("Top off now")
+                        icon.name: "battery-full-charging"
+                        enabled: !root.acting && overnightBox.ov && overnightBox.ov.phase !== "topping"
+                        onClicked: root.act("topoff now", false)
+                        PlasmaComponents.ToolTip { text: i18n("Lift the hold and charge to 100% now - going back out tonight") }
+                    }
+                    PlasmaComponents.Button {
+                        text: i18n("In for the night")
+                        icon.name: "weather-clear-night"
+                        enabled: !root.acting && overnightBox.ov && overnightBox.ov.phase === "charging_full"
+                        onClicked: root.act("night", false)
+                        PlasmaComponents.ToolTip { text: i18n("Start the overnight hold now instead of at %1", overnightBox.ov ? overnightBox.ov.night_from : "") }
+                    }
+                }
+                RowLayout {
+                    visible: !!(overnightBox.ov && overnightBox.ov.active)
+                    PlasmaComponents.Label { text: i18n("Leaving at:") }
+                    PlasmaComponents.TextField {
+                        id: leaveAt
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 5
+                        placeholderText: overnightBox.ov ? overnightBox.ov.leave_at : ""
+                        validator: RegularExpressionValidator { regularExpression: /^([01][0-9]|2[0-3]):[0-5][0-9]$/ }
+                    }
+                    PlasmaComponents.Button {
+                        text: i18n("Set")
+                        enabled: !root.acting && leaveAt.acceptableInput
+                        onClicked: { root.act("leave-at " + leaveAt.text, false); leaveAt.text = ""; }
+                    }
+                    PlasmaComponents.Button {
+                        text: i18n("Clear")
+                        visible: !!(overnightBox.ov && overnightBox.ov.leave_at_override_ts)
+                        enabled: !root.acting
+                        onClicked: root.act("leave-at none", false)
+                    }
+                }
             }
 
             Kirigami.InlineMessage {
@@ -496,24 +552,38 @@ PlasmaExtras.Representation {
         position: PlasmaComponents.ToolBar.Footer
         contentItem: ColumnLayout {
             spacing: Kirigami.Units.smallSpacing
-            PlasmaComponents.Label {
-                readonly property var parts: {
-                    const r = root.info ? root.info.revert : null;
-                    const out = [];
-                    if (!r) return out;
-                    if (r.after_hours_left !== null && r.after_hours_left !== undefined)
-                        out.push(i18n("%1 h", Math.max(0, r.after_hours_left).toFixed(1)));
-                    if (r.on_ac_hours_left !== null && r.on_ac_hours_left !== undefined)
-                        out.push(i18n("%1 h on AC", Math.max(0, r.on_ac_hours_left).toFixed(1)));
-                    return out;
+            RowLayout {
+                Layout.fillWidth: true
+                PlasmaComponents.Label {
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    readonly property var parts: {
+                        const r = root.info ? root.info.revert : null;
+                        const out = [];
+                        if (!r) return out;
+                        if (r.after_hours_left !== null && r.after_hours_left !== undefined)
+                            out.push(i18n("%1 h", Math.max(0, r.after_hours_left).toFixed(1)));
+                        if (r.on_ac_hours_left !== null && r.on_ac_hours_left !== undefined && !r.guard_blocking)
+                            out.push(i18n("%1 h on AC", Math.max(0, r.on_ac_hours_left).toFixed(1)));
+                        return out;
+                    }
+                    visible: text !== ""
+                    font: Kirigami.Theme.smallFont
+                    text: {
+                        const r = root.info ? root.info.revert : null;
+                        if (!r) return "";
+                        if (r.stay) return i18n("No automatic revert - stays on %1 until you change it", root.info.profile.label);
+                        let t = parts.length > 0 ? i18n("Reverts to %1 in %2", r.to, parts.join(i18n(" or "))) : "";
+                        if (r.guard_blocking) t += i18n(" (on-AC revert held: you were on battery today)");
+                        return t;
+                    }
                 }
-                visible: text !== ""
-                font: Kirigami.Theme.smallFont
-                text: {
-                    const r = root.info ? root.info.revert : null;
-                    if (!r) return "";
-                    if (r.stay) return i18n("No automatic revert - stays on %1 until you change it", root.info.profile.label);
-                    return parts.length > 0 ? i18n("Reverts to %1 in %2", r.to, parts.join(i18n(" or "))) : "";
+                PlasmaComponents.Button {
+                    text: i18n("Extend 24 h")
+                    icon.name: "chronometer"
+                    visible: !!(root.info && root.info.revert && root.info.revert.warning)
+                    enabled: !root.acting
+                    onClicked: root.act("profile extend 24h", false)
                 }
             }
             Flow {
@@ -527,7 +597,7 @@ PlasmaExtras.Representation {
                         checkable: true
                         checked: modelData.active
                         enabled: !root.acting
-                        icon.name: modelData.type === "fixed" ? "battery-profile-performance" : "battery-profile-powersave"
+                        icon.name: (modelData.type === "fixed" || modelData.type === "conference") ? "battery-profile-performance" : "battery-profile-powersave"
                         onClicked: root.act("profile set " + modelData.name, false)
                     }
                 }

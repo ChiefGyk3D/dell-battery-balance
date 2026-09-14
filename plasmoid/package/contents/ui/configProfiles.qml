@@ -16,6 +16,7 @@ KCM.SimpleKCM {
     readonly property var names: cfg ? Object.keys(cfg.profiles).sort() : []
     readonly property var p: (cfg && sel && cfg.profiles[sel]) ? cfg.profiles[sel] : null
     readonly property bool fixed: !!(p && p.bands && ("all" in p.bands))
+    readonly property bool conference: !!(p && p.overnight)
     property string message: ""
     property int messageType: Kirigami.MessageType.Information
 
@@ -235,17 +236,21 @@ KCM.SimpleKCM {
             QQC2.ComboBox {
                 Kirigami.FormData.label: i18n("Type:")
                 model: [i18n("Balancing - the wear logic picks each pack's band"),
-                        i18n("Fixed - one band for both packs")]
-                currentIndex: page.fixed ? 1 : 0
+                        i18n("Fixed - one band for both packs"),
+                        i18n("Conference - fixed by day, held overnight, topped off before you leave")]
+                currentIndex: page.conference ? 2 : (page.fixed ? 1 : 0)
                 onActivated: idx => {
-                    if ((idx === 1) === page.fixed) return;
-                    if (idx === 1) {
-                        page.p.bands = { all: [50, 80] };
-                        page.p.balancing = false;
-                        delete page.p.pins;
-                    } else {
+                    const cur = page.conference ? 2 : (page.fixed ? 1 : 0);
+                    if (idx === cur) return;
+                    if (idx === 0) {
                         page.p.bands = { neutral: [50, 80], protect: [50, 60], work: [80, 90] };
                         page.p.balancing = true;
+                        delete page.p.overnight;
+                    } else {
+                        if (!page.fixed) { page.p.bands = { all: idx === 2 ? [90, 100] : [50, 80] }; delete page.p.pins; }
+                        page.p.balancing = false;
+                        if (idx === 2) page.p.overnight = { mode: "topoff", leave_at: "07:00", night_from: "23:00", hold: [70, 80], margin_min: 30 };
+                        else delete page.p.overnight;
                     }
                     page.touch();
                 }
@@ -255,6 +260,52 @@ KCM.SimpleKCM {
             BandRow { Kirigami.FormData.label: i18n("Neutral band:"); visible: !page.fixed; key: "neutral" }
             BandRow { Kirigami.FormData.label: i18n("Protect band:"); visible: !page.fixed; key: "protect" }
             BandRow { Kirigami.FormData.label: i18n("Work band:"); visible: !page.fixed; key: "work" }
+
+            Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: i18n("Overnight"); visible: page.conference }
+            QQC2.ComboBox {
+                Kirigami.FormData.label: i18n("On hotel AC:")
+                visible: page.conference
+                model: [i18n("Hold overnight and top off before I leave (recommended)"),
+                        i18n("Leave the packs at 100%")]
+                currentIndex: (page.p && page.p.overnight && page.p.overnight.mode === "full") ? 1 : 0
+                onActivated: idx => { page.p.overnight.mode = idx === 1 ? "full" : "topoff"; page.touch(); }
+            }
+            QQC2.TextField {
+                Kirigami.FormData.label: i18n("Leave at:")
+                visible: page.conference
+                text: page.p && page.p.overnight ? page.p.overnight.leave_at : ""
+                validator: RegularExpressionValidator { regularExpression: /^([01][0-9]|2[0-3]):[0-5][0-9]$/ }
+                onTextEdited: { if (acceptableInput) { page.p.overnight.leave_at = text; page.touch(); } }
+            }
+            QQC2.TextField {
+                Kirigami.FormData.label: i18n("Night from:")
+                visible: page.conference
+                text: page.p && page.p.overnight ? page.p.overnight.night_from : ""
+                validator: RegularExpressionValidator { regularExpression: /^([01][0-9]|2[0-3]):[0-5][0-9]$/ }
+                onTextEdited: { if (acceptableInput) { page.p.overnight.night_from = text; page.touch(); } }
+            }
+            RowLayout {
+                Kirigami.FormData.label: i18n("Hold band:")
+                visible: page.conference
+                readonly property var v: (page.p && page.p.overnight && page.p.overnight.hold) ? page.p.overnight.hold : [70, 80]
+                QQC2.SpinBox {
+                    from: 50; to: Math.min(95, parent.v[1] - 1); value: parent.v[0]
+                    onValueModified: { page.p.overnight.hold = [value, parent.v[1]]; page.touch(); }
+                }
+                QQC2.Label { text: i18n("to") }
+                QQC2.SpinBox {
+                    from: Math.max(55, parent.v[0] + 1); to: 100; value: parent.v[1]
+                    onValueModified: { page.p.overnight.hold = [parent.v[0], value]; page.touch(); }
+                }
+                QQC2.Label { text: "%" }
+            }
+            QQC2.SpinBox {
+                Kirigami.FormData.label: i18n("Top-off margin (min):")
+                visible: page.conference
+                from: 0; to: 240
+                value: page.p && page.p.overnight ? page.p.overnight.margin_min : 30
+                onValueModified: { page.p.overnight.margin_min = value; page.touch(); }
+            }
 
             Kirigami.Separator { Kirigami.FormData.isSection: true; Kirigami.FormData.label: i18n("Auto-revert") }
 

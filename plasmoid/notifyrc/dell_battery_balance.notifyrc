@@ -22,3 +22,13 @@ Action=Popup
 Name=Pack removed at high charge
 Comment=A pack was removed above 70% and should be discharged before storage
 Action=Popup
+
+[Event/revertWarning]
+Name=Profile reverts soon
+Comment=A temporary profile reverts within the hour; extend it if you are still out
+Action=Popup
+
+[Event/topoffStarted]
+Name=Top-off started
+Comment=The conference profile lifted the overnight hold to be full by the departure time
+Action=Popup

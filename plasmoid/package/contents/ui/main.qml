@@ -67,7 +67,7 @@ PlasmoidItem {
     }
 
     // Map a state event to [notifyrc event id, title]; null when it is
-    // not one of the four conditions we notify for (spec §6.3).
+    // not one of the six conditions we notify for (spec §6.3).
     function notifyEventFor(ev) {
         const d = ev.detail || "";
         if (ev.kind === "pack" && d.indexOf("occupancy change") !== -1)
@@ -78,6 +78,10 @@ PlasmoidItem {
             return ["firmwareMismatch", i18n("Firmware disagrees with the requested ceiling")];
         if (ev.kind === "warning")
             return ["packRemovedHigh", i18n("Pack removed at high charge")];
+        if (ev.kind === "revert-warning")
+            return ["revertWarning", i18n("Profile reverts soon")];
+        if (ev.kind === "overnight" && d.indexOf("top-off started") === 0)
+            return ["topoffStarted", i18n("Top-off started")];
         return null;
     }
 
