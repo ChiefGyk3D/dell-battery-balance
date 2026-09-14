@@ -76,3 +76,55 @@ def in_window(now_ts, night_from, leave_at):
 
 def fmt_local(ts):
     return time.strftime("%H:%M", time.localtime(ts)) if ts is not None else "?"
+
+
+# ---------------------------------------------------------------- state
+
+def blank():
+    return {"phase": "off", "since_ts": None, "topoff_start_ts": None, "leave_ts": None,
+            "manual": None, "leave_at_override_ts": None,
+            "charge_ua": {b: [] for b in BATS}}
+
+
+def ensure(state):
+    ov = state.get("overnight")
+    if not isinstance(ov, dict):
+        ov = state["overnight"] = blank()
+    for k, v in blank().items():
+        ov.setdefault(k, v)
+    for b in BATS:
+        ov["charge_ua"].setdefault(b, [])
+    return ov
+
+
+# ------------------------------------------------------------- estimate
+
+def record_charge_current(state, sample):
+    ov = ensure(state)
+    for b, v in sample["bats"].items():
+        if v.get("status") == "Charging" and v.get("current_now_ua"):
+            lst = ov["charge_ua"].setdefault(b, [])
+            lst.append(int(abs(v["current_now_ua"])))
+            del lst[:-CHARGE_UA_KEEP]
+
+
+def median_charge_ua(state, slot):
+    lst = sorted(ensure(state)["charge_ua"].get(slot) or [])
+    if not lst:
+        return FALLBACK_CHARGE_UA
+    return lst[len(lst) // 2]
+
+
+def estimate_topoff_s(state, sample, margin_min):
+    """Seconds to bring every present pack to full: the EC charges the packs
+    one after the other, so the per-pack times ADD (spec §3)."""
+    total = float(margin_min) * 60.0
+    for b, v in sample["bats"].items():
+        full, now_uah = v.get("charge_full_uah"), v.get("charge_now_uah")
+        if not full or now_uah is None:
+            continue
+        deficit = full - now_uah
+        if deficit <= 0:
+            continue
+        total += deficit / median_charge_ua(state, b) * 3600.0 + CV_TAIL_S
+    return total
