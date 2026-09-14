@@ -310,9 +310,16 @@ def cmd_profile_create(args):
     state, cfg, _ = _view()
     if args.name in cfg["profiles"]:
         die(f"error: profile {args.name!r} exists")
-    if args.from_ not in cfg["profiles"]:
-        die(f"error: no profile {args.from_!r}")
-    cfg["profiles"][args.name] = json.loads(json.dumps(cfg["profiles"][args.from_]))
+    if args.template:
+        builtins = cfg_mod.default_config()["profiles"]
+        if args.template not in builtins:
+            die(f"error: no built-in profile {args.template!r}. Built-ins: {', '.join(sorted(builtins))}")
+        src = builtins[args.template]
+    else:
+        if args.from_ not in cfg["profiles"]:
+            die(f"error: no profile {args.from_!r}")
+        src = cfg["profiles"][args.from_]
+    cfg["profiles"][args.name] = json.loads(json.dumps(src))
     cfg["profiles"][args.name]["label"] = args.name
     _save_config(cfg, state, "creating profile")
     save_state(state)
@@ -551,7 +558,11 @@ def build_parser():
                    help="revert after this long (90m, 8h, 3d), replacing the profile's own triggers for this switch")
     g.add_argument("--stay", action="store_true", help="no automatic revert for this switch")
     sp.set_defaults(func=cmd_profile_set, cls="control")
-    sp = pr.add_parser("create"); sp.add_argument("name"); sp.add_argument("--from", dest="from_", required=True)
+    sp = pr.add_parser("create"); sp.add_argument("name")
+    g = sp.add_mutually_exclusive_group(required=True)
+    g.add_argument("--from", dest="from_", metavar="NAME", help="clone an existing profile")
+    g.add_argument("--template", metavar="BUILTIN",
+                   help="start from a shipped default (conference, field, ...), even if the installed config lacks it")
     sp.set_defaults(func=cmd_profile_create, cls="profile-create")
     sp = pr.add_parser("edit"); sp.add_argument("name"); sp.add_argument("assignments", nargs="+", metavar="key=value")
     sp.set_defaults(func=cmd_profile_edit, cls="profile-edit")

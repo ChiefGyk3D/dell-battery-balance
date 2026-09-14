@@ -823,6 +823,31 @@ class Packs(CliBase):
             self.assertEqual(_json.load(fh)["version"], 2)
 
 
+class ProfileTemplate(CliBase):
+    def test_template_adds_a_builtin_missing_from_the_installed_config(self):
+        code, _, err = self.run_cli("profile", "delete", "conference")
+        self.assertEqual(code, 0, err)
+        code, _, err = self.run_cli("profile", "create", "defcon", "--template", "conference")
+        self.assertEqual(code, 0, err)
+        code, out, _ = self.run_cli("profile", "show", "defcon")
+        self.assertIn('overnight.mode = "topoff"', out)
+        self.assertIn('label = "defcon"', out)
+
+    def test_unknown_template_is_an_error(self):
+        code, _, err = self.run_cli("profile", "create", "x", "--template", "nope")
+        self.assertEqual(code, 1)
+        self.assertIn("no built-in profile 'nope'", err)
+        self.assertIn("conference", err)
+
+    def test_from_and_template_are_exclusive(self):
+        code, _, _ = self.run_cli("profile", "create", "x", "--from", "field", "--template", "conference")
+        self.assertEqual(code, 2)
+
+    def test_template_needs_configure_class(self):
+        code, _, err = self.run_cli("--polkit-class", "control", "--", "profile", "create", "x", "--template", "conference")
+        self.assertEqual(code, 3)
+
+
 class Duration(unittest.TestCase):
     def test_parse(self):
         from dbb.cli import parse_duration

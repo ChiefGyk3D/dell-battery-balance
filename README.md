@@ -251,7 +251,7 @@ does not recognize even though it is valid, equivalent TOML.
 | `profile show <name>` | print one profile's TOML |
 | `profile <name>` | shortcut for `profile set <name>` |
 | `profile set <name> [--for <duration> \| --stay]` | switch profiles and apply immediately; `--for` reverts after that long and `--stay` never, either one replacing the profile's own triggers for this switch |
-| `profile create <name> --from <name>` | clone an existing profile |
+| `profile create <name> --from <name> \| --template <builtin>` | clone an existing profile, or start from a shipped default (`conference`, `field`, `travel`, `storage`, `daily`) that an older config.toml may not have |
 | `profile edit <name> key=value ...` | change one profile's fields; `revert=none` or `revert.after_hours=none` remove auto-revert |
 | `profile delete <name>` | remove a profile (not `daily`, not the active one) |
 | `config get [key] [--json]` | print the whole config or one dotted key; `--json` is what the applet's config dialog reads |

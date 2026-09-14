@@ -19,6 +19,7 @@ DOCUMENTED = [
     ["profile", "set", "field"], ["profile", "set", "field", "--for", "8h"],
     ["profile", "set", "field", "--stay"], ["profile", "field"],
     ["profile", "create", "trip", "--from", "travel"],
+    ["profile", "create", "defcon", "--template", "conference"],
     ["profile", "edit", "field", "revert.after_hours=120"], ["profile", "edit", "field", "revert=none"],
     ["profile", "delete", "trip"],
     ["config", "get"], ["config", "get", "general.deadband_efc"], ["config", "get", "--json"],
