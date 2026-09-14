@@ -30,13 +30,18 @@ GENERAL_KEYS = {
     "active_profile": str, "previous_profile": str, "deadband_efc": float,
     "auto_balance": bool, "sample_interval_s": int, "bench_temp_c": float,
     "bios_password_file": str, "firmware_write_needs_reboot": bool,
-    "sample_log_years": int,
+    "sample_log_years": int, "topoff_resuspend": bool,
 }
 # Keys added after 0.3.0: a config.toml written before they existed must
 # still load, so they are optional on read and filled in by load()/load_json().
-GENERAL_OPTIONAL = {"sample_log_years": 3}
-PROFILE_KEYS = {"label", "description", "balancing", "bands", "revert", "pins"}
+GENERAL_OPTIONAL = {"sample_log_years": 3, "topoff_resuspend": True}
+PROFILE_KEYS = {"label", "description", "balancing", "bands", "revert", "pins", "overnight"}
 REVERT_KEYS = {"after_hours", "on_ac_hours", "to"}
+OVERNIGHT_KEYS = {"mode", "leave_at", "night_from", "hold", "margin_min"}
+OVERNIGHT_MODES = ("topoff", "full")
+HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+DEFAULT_OVERNIGHT = {"mode": "topoff", "leave_at": "07:00", "night_from": "23:00",
+                     "hold": [70, 80], "margin_min": 30}
 
 
 class ConfigError(ValueError):
@@ -50,6 +55,7 @@ def default_config():
             "deadband_efc": 0.5, "auto_balance": True, "sample_interval_s": 120,
             "bench_temp_c": 25.0, "bios_password_file": "",
             "firmware_write_needs_reboot": False, "sample_log_years": 3,
+            "topoff_resuspend": True,
         },
         "profiles": {
             "daily": {"label": "Daily", "description": "Docked / desk. Wear balancing on.",
@@ -59,6 +65,11 @@ def default_config():
                       "description": "Maximum runtime. Wear protection off.",
                       "balancing": False, "bands": {"all": [90, 100]},
                       "revert": {"after_hours": 72, "on_ac_hours": 12, "to": "previous"}},
+            "conference": {"label": "Conference",
+                           "description": "Con week. Full by day, held overnight, topped off before you leave.",
+                           "balancing": False, "bands": {"all": [90, 100]},
+                           "revert": {"after_hours": 168, "on_ac_hours": 12, "to": "previous"},
+                           "overnight": copy.deepcopy(DEFAULT_OVERNIGHT)},
             "travel": {"label": "Travel", "description": "Reserve without the 100% float.",
                        "balancing": True,
                        "bands": {"neutral": [70, 90], "protect": [60, 80], "work": [80, 95]}},
@@ -69,6 +80,8 @@ def default_config():
 
 
 def profile_type(profile):
+    if "overnight" in profile:
+        return "conference"
     return "fixed" if "all" in profile.get("bands", {}) else "balancing"
 
 
@@ -181,6 +194,30 @@ def validate(cfg):
                 if set(pin) != {"start", "stop"}:
                     raise ConfigError(f"{pb}: needs both start and stop")
                 _band(pb, [pin["start"], pin["stop"]])
+        ov = p.get("overnight")
+        if ov is not None:
+            ob = f"{base}.overnight"
+            if not isinstance(ov, dict):
+                raise ConfigError(f"{ob}: must be a table")
+            if "all" not in bands:
+                raise ConfigError(f"{ob}: only a fixed profile (bands.all) can have an overnight table")
+            for k in ov:
+                if k not in OVERNIGHT_KEYS:
+                    raise ConfigError(f"{ob}.{k}: unknown key")
+            for k in sorted(OVERNIGHT_KEYS):
+                if k not in ov:
+                    raise ConfigError(f"{ob}.{k}: missing")
+            if ov["mode"] not in OVERNIGHT_MODES:
+                raise ConfigError(f"{ob}.mode: must be one of {', '.join(OVERNIGHT_MODES)}")
+            for k in ("leave_at", "night_from"):
+                if not isinstance(ov[k], str) or not HHMM_RE.match(ov[k]):
+                    raise ConfigError(f"{ob}.{k}: must be HH:MM (24-hour)")
+            if ov["leave_at"] == ov["night_from"]:
+                raise ConfigError(f"{ob}.leave_at: must differ from night_from")
+            _band(f"{ob}.hold", ov["hold"])
+            _typed(f"{ob}.margin_min", ov["margin_min"], int)
+            if ov["margin_min"] < 0:
+                raise ConfigError(f"{ob}.margin_min: must be >= 0")
     for k in ("active_profile", "previous_profile"):
         if g[k] not in profiles:
             raise ConfigError(f"general.{k}: unknown profile {g[k]!r}")
@@ -272,6 +309,9 @@ def emit(cfg):
         for k in ("after_hours", "on_ac_hours", "to"):
             if k in p.get("revert", {}):
                 out.append(f"revert.{k} = {_val(p['revert'][k])}")
+        for k in ("mode", "leave_at", "night_from", "hold", "margin_min"):
+            if k in p.get("overnight", {}):
+                out.append(f"overnight.{k} = {_val(p['overnight'][k])}")
         for slot in sorted(p.get("pins", {})):
             out.append(f"pins.{slot} = {_val(p['pins'][slot])}")
     return "\n".join(out) + "\n"
@@ -323,6 +363,9 @@ def _resolve_type(key):
                 return float
             elif rest[1] == "to":
                 return str
+        elif len(rest) == 2 and rest[0] == "overnight":
+            return {"mode": str, "leave_at": str, "night_from": str,
+                    "hold": list, "margin_min": int}.get(rest[1])
         elif len(rest) >= 2 and rest[0] == "pins":
             if len(rest) == 3 and rest[2] == "role":
                 return str
@@ -391,6 +434,23 @@ def set_dotted(cfg, key, raw):
             if not rv.get("after_hours") and not rv.get("on_ac_hours"):
                 del prof["revert"]
         return
+    if len(parts) == 3 and parts[0] == "profiles" and parts[2] == "overnight":
+        if parts[1] not in cfg.get("profiles", {}):
+            raise ConfigError(f"{key}: no profile {parts[1]!r}")
+        prof = cfg["profiles"][parts[1]]
+        if word in OFF_WORDS:
+            prof.pop("overnight", None)
+            return
+        if word == "default":
+            prof["overnight"] = copy.deepcopy(DEFAULT_OVERNIGHT)
+            return
+        raise ConfigError(f"{key}: use 'default' to add the table or 'none' to remove it")
+    if len(parts) == 4 and parts[0] == "profiles" and parts[2] == "overnight":
+        if parts[1] not in cfg.get("profiles", {}):
+            raise ConfigError(f"{key}: no profile {parts[1]!r}")
+        prof = cfg["profiles"][parts[1]]
+        if "overnight" not in prof:
+            prof["overnight"] = copy.deepcopy(DEFAULT_OVERNIGHT)
     node = cfg
     for p in parts[:-1]:
         node = node.setdefault(p, {})

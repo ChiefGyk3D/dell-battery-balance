@@ -203,7 +203,8 @@ class Profiles(CliBase):
         code, _, err = self.run_cli("profile", "edit", "daily", "bands.neutral=10,80")
         self.assertNotEqual(code, 0)
         self.assertIn("profiles.daily.bands.neutral", err)
-        self.assertEqual(self.status()["profiles"][0]["name"], "daily")
+        profiles_by_name = {p["name"]: p for p in self.status()["profiles"]}
+        self.assertIn("daily", profiles_by_name)
 
     def test_edit_bad_value_does_not_traceback(self):
         code, _, err = self.run_cli("profile", "edit", "daily", "bands.neutral=abc")

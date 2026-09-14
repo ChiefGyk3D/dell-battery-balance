@@ -8,6 +8,7 @@ bench_temp_c = 25.0
 bios_password_file = ""
 firmware_write_needs_reboot = false
 sample_log_years = 3
+topoff_resuspend = true
 
 [profiles.daily]
 label = "Daily"
@@ -25,6 +26,20 @@ bands.all = [90, 100]
 revert.after_hours = 72
 revert.on_ac_hours = 12
 revert.to = "previous"
+
+[profiles.conference]
+label = "Conference"
+description = "Con week. Full by day, held overnight, topped off before you leave."
+balancing = false
+bands.all = [90, 100]
+revert.after_hours = 168
+revert.on_ac_hours = 12
+revert.to = "previous"
+overnight.mode = "topoff"
+overnight.leave_at = "07:00"
+overnight.night_from = "23:00"
+overnight.hold = [70, 80]
+overnight.margin_min = 30
 
 [profiles.storage]
 label = "Storage"

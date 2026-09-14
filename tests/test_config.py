@@ -8,9 +8,9 @@ class DefaultsAndRoundTrip(unittest.TestCase):
     def test_default_validates(self):
         config.validate(config.default_config())
 
-    def test_default_has_four_profiles(self):
+    def test_default_has_five_profiles(self):
         self.assertEqual(sorted(config.default_config()["profiles"]),
-                         ["daily", "field", "storage", "travel"])
+                         ["conference", "daily", "field", "storage", "travel"])
 
     def test_emit_parses_back_identically(self):
         cfg = config.default_config()
@@ -28,6 +28,35 @@ class DefaultsAndRoundTrip(unittest.TestCase):
         cfg = config.default_config()
         self.assertEqual(config.profile_type(cfg["profiles"]["daily"]), "balancing")
         self.assertEqual(config.profile_type(cfg["profiles"]["field"]), "fixed")
+
+    def test_profile_type_conference(self):
+        cfg = config.default_config()
+        self.assertEqual(config.profile_type(cfg["profiles"]["conference"]), "conference")
+
+    def test_conference_default_shape(self):
+        p = config.default_config()["profiles"]["conference"]
+        self.assertEqual(p["bands"], {"all": [90, 100]})
+        self.assertEqual(p["revert"], {"after_hours": 168, "on_ac_hours": 12, "to": "previous"})
+        self.assertEqual(p["overnight"], {"mode": "topoff", "leave_at": "07:00", "night_from": "23:00",
+                                          "hold": [70, 80], "margin_min": 30})
+        self.assertEqual(config.DEFAULT_OVERNIGHT, p["overnight"])
+
+    def test_topoff_resuspend_is_optional_and_defaults_true(self):
+        cfg = config.default_config()
+        self.assertIs(cfg["general"]["topoff_resuspend"], True)
+        text = config.emit(cfg).replace("topoff_resuspend = true\n", "")
+        self.assertNotIn("topoff_resuspend", text)
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "config.toml")
+            with open(p, "w") as fh:
+                fh.write(text)
+            loaded = config.load(p)
+        self.assertIs(loaded["general"]["topoff_resuspend"], True)
+
+    def test_shipped_default_file_validates(self):
+        here = os.path.dirname(__file__)
+        cfg = config.load(os.path.join(here, os.pardir, "config", "config.toml.default"), must_exist=True)
+        self.assertIn("conference", cfg["profiles"])
 
 
 class Validation(unittest.TestCase):
@@ -217,6 +246,90 @@ class SetDotted(unittest.TestCase):
         with self.assertRaises(config.ConfigError) as cm:
             config.set_dotted(cfg, "general.deadband_efc", "abc")
         self.assertIn("general.deadband_efc", str(cm.exception))
+
+
+class OvernightValidation(unittest.TestCase):
+    def setUp(self):
+        self.cfg = config.default_config()
+        self.ov = self.cfg["profiles"]["conference"]["overnight"]
+
+    def assertRejects(self, fragment):
+        with self.assertRaises(config.ConfigError) as cm:
+            config.validate(self.cfg)
+        self.assertIn(fragment, str(cm.exception))
+
+    def test_unknown_key(self):
+        self.ov["snooze"] = 1
+        self.assertRejects("profiles.conference.overnight.snooze: unknown key")
+
+    def test_missing_key(self):
+        del self.ov["margin_min"]
+        self.assertRejects("profiles.conference.overnight.margin_min: missing")
+
+    def test_bad_mode(self):
+        self.ov["mode"] = "nap"
+        self.assertRejects("profiles.conference.overnight.mode")
+
+    def test_bad_time(self):
+        self.ov["leave_at"] = "7:00"
+        self.assertRejects("profiles.conference.overnight.leave_at: must be HH:MM")
+
+    def test_times_must_differ(self):
+        self.ov["night_from"] = self.ov["leave_at"]
+        self.assertRejects("profiles.conference.overnight.leave_at: must differ from night_from")
+
+    def test_hold_is_a_band(self):
+        self.ov["hold"] = [80, 70]
+        self.assertRejects("profiles.conference.overnight.hold: start must be below stop")
+
+    def test_margin_non_negative(self):
+        self.ov["margin_min"] = -1
+        self.assertRejects("profiles.conference.overnight.margin_min: must be >= 0")
+
+    def test_overnight_only_on_fixed_profiles(self):
+        self.cfg["profiles"]["daily"]["overnight"] = dict(self.ov)
+        self.assertRejects("profiles.daily.overnight: only a fixed profile")
+
+    def test_full_mode_still_validates_other_keys(self):
+        self.ov["mode"] = "full"
+        self.ov["leave_at"] = "nope"
+        self.assertRejects("profiles.conference.overnight.leave_at")
+
+
+class OvernightEditing(unittest.TestCase):
+    def setUp(self):
+        self.cfg = config.default_config()
+
+    def test_emit_round_trips_overnight(self):
+        self.assertEqual(tomllib.loads(config.emit(self.cfg)), self.cfg)
+        self.assertIn('overnight.leave_at = "07:00"', config.emit(self.cfg))
+
+    def test_set_one_key(self):
+        config.set_dotted(self.cfg, "profiles.conference.overnight.leave_at", "06:30")
+        self.assertEqual(self.cfg["profiles"]["conference"]["overnight"]["leave_at"], "06:30")
+        config.set_dotted(self.cfg, "profiles.conference.overnight.hold", "60,75")
+        self.assertEqual(self.cfg["profiles"]["conference"]["overnight"]["hold"], [60, 75])
+        config.set_dotted(self.cfg, "profiles.conference.overnight.margin_min", "45")
+        self.assertEqual(self.cfg["profiles"]["conference"]["overnight"]["margin_min"], 45)
+        config.validate(self.cfg)
+
+    def test_none_removes_table(self):
+        config.set_dotted(self.cfg, "profiles.conference.overnight", "none")
+        self.assertNotIn("overnight", self.cfg["profiles"]["conference"])
+        self.assertEqual(config.profile_type(self.cfg["profiles"]["conference"]), "fixed")
+        config.validate(self.cfg)
+
+    def test_default_adds_table_to_a_fixed_profile(self):
+        config.set_dotted(self.cfg, "profiles.field.overnight", "default")
+        self.assertEqual(self.cfg["profiles"]["field"]["overnight"], config.DEFAULT_OVERNIGHT)
+        config.validate(self.cfg)
+
+    def test_setting_a_key_on_a_profile_without_the_table_fills_defaults(self):
+        config.set_dotted(self.cfg, "profiles.field.overnight.night_from", "19:00")
+        ov = self.cfg["profiles"]["field"]["overnight"]
+        self.assertEqual(ov["night_from"], "19:00")
+        self.assertEqual(ov["leave_at"], "07:00")
+        config.validate(self.cfg)
 
 
 if __name__ == "__main__":
