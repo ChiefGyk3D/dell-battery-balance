@@ -489,7 +489,7 @@ Right-click the widget → Configure. Four pages:
 - **General** — balance deadband, automatic balancing, bench temperature.
 
 <p align="center">
-  <img src="media/applet-config-profiles.png" width="600" alt="Profiles page: profile picker, add-as-copy, delete, label, description, type, the three bands, auto-revert and pins">
+  <img src="media/applet-config-profiles.png" width="600" alt="Profiles page: profile picker, add-as-copy, delete, label, description, type (balancing, fixed or conference), the three bands, auto-revert, pins, and for a conference profile the overnight fields: on hotel AC, leave at, night from, hold band, top-off margin">
 </p>
 <p align="center">
   <img src="media/applet-config-packs.png" width="600" alt="Packs page: each known pack with EFC, calendar score and location, rename and retire buttons"><br>
@@ -512,7 +512,8 @@ pending pack identity question, an auto-revert firing, a firmware
 read-back mismatch, a pack removed above 70%, a reverting profile within
 an hour of reverting (`revert-warning`), and the conference profile's
 timed top-off starting. They come from the applet (root has no session
-bus), so they need the widget running and lag by at most one poll interval. The event definitions live in
+bus), so they need the widget running and lag by at most one poll
+interval. The event definitions live in
 `/usr/share/knotifications6/dell_battery_balance.notifyrc`, which
 `install.sh` places — re-run `sudo ./install.sh` when upgrading from 0.2,
 then restart the shell so the applet package reloads:
