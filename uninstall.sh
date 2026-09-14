@@ -24,11 +24,13 @@ rm -f /usr/share/polkit-1/actions/com.chiefgyk3d.dellbatterybalance.control.poli
       /usr/share/polkit-1/actions/com.chiefgyk3d.dellbatterybalance.configure.policy
 rm -f /usr/share/knotifications6/dell_battery_balance.notifyrc
 
-# Clear an RTC alarm the tool set (the marker is its proof of ownership).
-if [[ -f /var/lib/$SVC/wakealarm.set && -w /sys/class/rtc/rtc0/wakealarm ]]; then
+# Clear an RTC alarm the tool set (the marker is its proof of ownership),
+# then remove the marker's root-only directory outright -- it is not part of
+# the service-writable state dir and so is not covered by --purge below.
+if [[ -f /var/lib/$SVC-wake/wakealarm.set && -w /sys/class/rtc/rtc0/wakealarm ]]; then
     echo 0 > /sys/class/rtc/rtc0/wakealarm 2>/dev/null || true
-    rm -f /var/lib/$SVC/wakealarm.set
 fi
+rm -rf /var/lib/$SVC-wake
 
 rm -f /usr/local/libexec/dell-battery-balance-grant \
       /usr/local/libexec/dell-battery-balance-wake \

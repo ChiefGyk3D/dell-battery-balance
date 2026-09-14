@@ -194,8 +194,10 @@ every tick, atomically). The wake helper then:
    the future and at most 24 h ahead; anything else is treated as "no
    alarm".
 2. Programs it: writes `0` then the value to `/sys/class/rtc/rtc0/wakealarm`,
-   and records the value in `/var/lib/dell-battery-balance/wakealarm.set`
-   (root-owned). Idempotent when the value is unchanged.
+   and records the value in `/var/lib/dell-battery-balance-wake/wakealarm.set`
+   (root:root `0755`, outside the service-writable state dir; a symlink
+   planted at that path is removed, never followed). Idempotent when the
+   value is unchanged.
 3. Clears it: if the file is empty and `wakealarm.set` exists, writes `0` to
    the RTC alarm and removes the marker. An alarm the tool did not set is
    never touched — the marker is the proof of ownership.
@@ -275,10 +277,12 @@ two new revert flags.
 ## 7. State file
 
 New keys: `overnight` (§2), `battery_run_start_ts`, `last_battery_stint_end_ts`,
-`revert_warned_ts`. Version stays 2; missing keys default on load. Two new
-files in the state dir, `wakealarm` (service-owned, rewritten every tick)
-and `wakealarm.set` (root-owned marker). Both are listed in the README's
-state-directory table and removed by uninstall.
+`revert_warned_ts`. Version stays 2; missing keys default on load. One new
+file in the state dir, `wakealarm` (service-owned, rewritten every tick,
+listed in the README's state-directory table); its root-owned ownership
+marker `wakealarm.set` lives outside the state dir, in its own directory
+`/var/lib/dell-battery-balance-wake` (§4), created by install.sh and removed
+by uninstall.
 
 ## 8. Applet
 

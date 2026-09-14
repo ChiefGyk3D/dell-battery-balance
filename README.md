@@ -362,10 +362,13 @@ manually in the meantime.
 A second root step, `/usr/local/libexec/dell-battery-balance-wake`
 (`ExecStartPost=+`), programs the RTC wake alarm the tick asked for
 (`wakealarm` in the state directory), clears only alarms it set itself
-(`wakealarm.set` is its proof of ownership), and after a wake it caused puts
-the machine back to sleep if the lid is closed and `general.topoff_resuspend`
-is true. It reads 32 bytes, accepts only an integer at most 24 h ahead, and
-touches nothing else.
+(`wakealarm.set`, its proof of ownership, is root-owned and lives in
+`/var/lib/dell-battery-balance-wake` — a directory outside the
+service-writable state directory, so the service account can neither forge
+nor clear an alarm), and after a wake it caused puts the machine back to
+sleep if the lid is closed and `general.topoff_resuspend` is true. It reads
+32 bytes, accepts only an integer at most 24 h ahead, never follows a
+symlink planted at the marker path, and touches nothing else.
 
 Two polkit actions gate the two wrappers used above:
 
@@ -552,8 +555,12 @@ bit keeps new files in the service group):
   atomically on every tick (see Monitoring below).
 - `wakealarm` — the epoch the conference profile wants the machine woken at
   for its top-off, rewritten every tick (empty when nothing is pending).
-- `wakealarm.set` — root-owned marker of the alarm the wake helper actually
-  programmed, so it never clears an alarm something else set.
+
+The wake helper's own ownership marker, `wakealarm.set`, is **not** kept
+here: it lives in `/var/lib/dell-battery-balance-wake` (root:root, `0755`,
+created by install.sh and by the helper itself if missing) — a directory the
+service account cannot write to, so it can neither forge nor clear an alarm
+the helper set.
 
 Events carry an `id` (monotonic, never reused) since 0.3; a 0.2 state file
 gets its existing events numbered once on first load. `reset --all` keeps

@@ -35,6 +35,10 @@ install -Dm644 "$src/README.md" /usr/local/share/doc/$SVC/README.md
 install -d -m2775 -o "$SVC" -g "$SVC" /var/lib/$SVC
 chown -R "$SVC:$SVC" /var/lib/$SVC
 find /var/lib/$SVC -type f -exec chmod 664 {} +
+# Root-only home for the wake helper's ownership marker -- kept out of the
+# service-writable state dir above so the service account can neither forge
+# nor clear it (see libexec/dell-battery-balance-wake).
+install -d -m755 -o root -g root /var/lib/$SVC-wake
 install -d -m2775 -o root -g "$SVC" /etc/$SVC
 [[ -e /etc/$SVC/config.toml ]] || install -m664 -o root -g "$SVC" "$src/config/config.toml.default" /etc/$SVC/config.toml
 

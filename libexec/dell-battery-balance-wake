@@ -3,18 +3,24 @@
 # ExecStartPost=+ after every tick. It turns the service's wake request
 # (STATE_DIR/wakealarm: an epoch while the conference profile is holding,
 # empty otherwise) into an RTC alarm, clears only alarms it set itself
-# (STATE_DIR/wakealarm.set is the proof of ownership), and after a wake it
+# (MARK_DIR/wakealarm.set is the proof of ownership), and after a wake it
 # caused -- lid still closed, config not opting out -- puts the machine back
 # to sleep. Every path is bounded: 32 bytes read, integer only, at most 24 h
 # ahead, never in the past.
+#
+# The marker lives in its own root-only directory, not the service-writable
+# state dir: the service account must not be able to replace it with a
+# symlink and trick this (root) script into truncating an arbitrary file, or
+# forge/clear the marker itself.
 set -u
 STATE=${DBB_STATE_DIR:-/var/lib/dell-battery-balance}
+MARK_DIR=${DBB_MARK_DIR:-/var/lib/dell-battery-balance-wake}
 RTC=${DBB_RTC_PATH:-/sys/class/rtc/rtc0/wakealarm}
 LID_GLOB=${DBB_LID_GLOB:-/proc/acpi/button/lid/*/state}
 CONFIG=${DBB_CONFIG_FILE:-/etc/dell-battery-balance/config.toml}
 SUSPEND=${DBB_SUSPEND_CMD:-systemctl suspend --no-block}
 REQ=$STATE/wakealarm
-MARK=$STATE/wakealarm.set
+MARK=$MARK_DIR/wakealarm.set
 RESUSPEND_WINDOW=180
 
 now=$(date +%s)
@@ -31,7 +37,7 @@ if [ -f "$REQ" ]; then
 fi
 
 have=""
-if [ -f "$MARK" ]; then
+if [ -f "$MARK" ] && [ ! -L "$MARK" ]; then
     have=$(head -c 32 "$MARK" | tr -d '[:space:]')
     case "$have" in
         ''|*[!0-9]*) have="" ;;
@@ -39,11 +45,20 @@ if [ -f "$MARK" ]; then
 fi
 
 if [ -n "$want" ]; then
-    if [ "$want" != "$have" ] && [ -w "$RTC" ]; then
-        # A pending alarm must be cleared before a new one is accepted.
-        echo 0 > "$RTC" 2>/dev/null
-        if echo "$want" > "$RTC" 2>/dev/null; then
-            printf '%s\n' "$want" > "$MARK"
+    if [ "$want" != "$have" ]; then
+        if [ -w "$RTC" ]; then
+            # A pending alarm must be cleared before a new one is accepted.
+            echo 0 > "$RTC" 2>/dev/null
+            if echo "$want" > "$RTC" 2>/dev/null; then
+                mkdir -p -m 0755 "$MARK_DIR" 2>/dev/null
+                # Never write through a symlink planted at the marker path.
+                [ -L "$MARK" ] && rm -f "$MARK"
+                printf '%s\n' "$want" > "$MARK"
+            else
+                echo "dell-battery-balance-wake: cannot program $RTC" >&2
+            fi
+        else
+            echo "dell-battery-balance-wake: cannot program $RTC" >&2
         fi
     fi
     exit 0

@@ -9,13 +9,15 @@ class WakeHelper(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         d = self.tmp.name
         self.state = os.path.join(d, "state"); os.makedirs(self.state)
+        self.mark_dir = os.path.join(d, "wake-mark"); os.makedirs(self.mark_dir)
         self.rtc = os.path.join(d, "wakealarm")
         with open(self.rtc, "w"):
             pass
         self.lid = os.path.join(d, "lid", "LID0", "state"); os.makedirs(os.path.dirname(self.lid))
         self.config = os.path.join(d, "config.toml")
         self.suspended = os.path.join(d, "suspended")
-        self.env = dict(os.environ, DBB_STATE_DIR=self.state, DBB_RTC_PATH=self.rtc,
+        self.env = dict(os.environ, DBB_STATE_DIR=self.state, DBB_MARK_DIR=self.mark_dir,
+                        DBB_RTC_PATH=self.rtc,
                         DBB_LID_GLOB=os.path.join(d, "lid", "*", "state"), DBB_CONFIG_FILE=self.config,
                         DBB_SUSPEND_CMD=f"touch {self.suspended}")
         self.now = int(time.time())
@@ -33,7 +35,7 @@ class WakeHelper(unittest.TestCase):
             fh.write(text)
 
     def mark(self, value=None):
-        p = os.path.join(self.state, "wakealarm.set")
+        p = os.path.join(self.mark_dir, "wakealarm.set")
         if value is None:
             if not os.path.exists(p):
                 return None
@@ -134,3 +136,40 @@ class WakeHelper(unittest.TestCase):
         self.run_helper()
         self.assertFalse(os.path.exists(self.suspended))
         self.assertEqual(self.rtc_text(), str(self.now + 900))
+
+    def test_symlinked_marker_is_replaced_not_followed(self):
+        # A service account that could still reach the marker path must not
+        # be able to turn a write into an arbitrary-file truncation.
+        victim = os.path.join(self.tmp.name, "victim")
+        with open(victim, "w") as fh:
+            fh.write("do-not-touch")
+        mark_path = os.path.join(self.mark_dir, "wakealarm.set")
+        os.symlink(victim, mark_path)
+        want = self.now + 3600
+        self.req(f"{want}\n")
+        self.run_helper()
+        self.assertEqual(self.rtc_text(), str(want))
+        self.assertFalse(os.path.islink(mark_path))
+        self.assertEqual(self.mark(), str(want))
+        with open(victim) as fh:
+            self.assertEqual(fh.read(), "do-not-touch")
+
+    def test_creates_the_mark_dir_when_missing(self):
+        fresh = os.path.join(self.tmp.name, "fresh-wake-mark")
+        self.assertFalse(os.path.exists(fresh))
+        env = dict(self.env, DBB_MARK_DIR=fresh)
+        want = self.now + 3600
+        self.req(f"{want}\n")
+        r = subprocess.run(["sh", HELPER], env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.path.isdir(fresh))
+        with open(os.path.join(fresh, "wakealarm.set")) as fh:
+            self.assertEqual(fh.read().strip(), str(want))
+
+    def test_unwritable_rtc_warns_on_stderr_and_leaves_no_marker(self):
+        self.env["DBB_RTC_PATH"] = os.path.join(self.tmp.name, "no-such-rtc")
+        want = self.now + 3600
+        self.req(f"{want}\n")
+        r = self.run_helper()
+        self.assertIn("cannot program", r.stderr)
+        self.assertIsNone(self.mark())
