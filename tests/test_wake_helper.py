@@ -9,7 +9,9 @@ class WakeHelper(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         d = self.tmp.name
         self.state = os.path.join(d, "state"); os.makedirs(self.state)
-        self.rtc = os.path.join(d, "wakealarm"); open(self.rtc, "w").close()
+        self.rtc = os.path.join(d, "wakealarm")
+        with open(self.rtc, "w"):
+            pass
         self.lid = os.path.join(d, "lid", "LID0", "state"); os.makedirs(os.path.dirname(self.lid))
         self.config = os.path.join(d, "config.toml")
         self.suspended = os.path.join(d, "suspended")
@@ -33,12 +35,16 @@ class WakeHelper(unittest.TestCase):
     def mark(self, value=None):
         p = os.path.join(self.state, "wakealarm.set")
         if value is None:
-            return open(p).read().strip() if os.path.exists(p) else None
+            if not os.path.exists(p):
+                return None
+            with open(p) as fh:
+                return fh.read().strip()
         with open(p, "w") as fh:
             fh.write(f"{value}\n")
 
     def rtc_text(self):
-        return open(self.rtc).read().strip()
+        with open(self.rtc) as fh:
+            return fh.read().strip()
 
     def lid_state(self, s):
         with open(self.lid, "w") as fh:
