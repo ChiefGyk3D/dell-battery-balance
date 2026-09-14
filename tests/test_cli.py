@@ -1,5 +1,6 @@
-import io, json, os, sys, tempfile, unittest
+import io, json, os, sys, tempfile, time, unittest
 from contextlib import redirect_stdout, redirect_stderr
+from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 
 
@@ -856,6 +857,74 @@ class Duration(unittest.TestCase):
         self.assertEqual(parse_duration("90m"), 1.5)
         with self.assertRaises(ValueError):
             parse_duration("soon")
+
+
+class Overnight(CliBase):
+    """The tick drives the machine on the real clock; pin it with mock."""
+
+    def setUp(self):
+        super().setUp()
+        self._tz = os.environ.get("TZ")
+        os.environ["TZ"] = "America/New_York"
+        time.tzset()
+        # Pin the clock for the switch too: at 12:00 the machine lands in
+        # charging_full, so every test starts from the same phase whatever
+        # the wall clock says.
+        with mock.patch("time.time", return_value=self.at(12, 0)):
+            code, _, err = self.run_cli("profile", "set", "conference", "--stay")
+        self.assertEqual(code, 0, err)
+
+    def tearDown(self):
+        if self._tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = self._tz
+        time.tzset()
+        super().tearDown()
+
+    @staticmethod
+    def at(h, mi, day=5):
+        return time.mktime((2026, 8, day, h, mi, 0, 0, 0, -1))
+
+    def stop_value(self, slot):
+        attr = self.sysfs.SYSMAN_ATTRS[slot][2]
+        return self.fs.read(f"class/firmware-attributes/dell-wmi-sysman/attributes/{attr}/current_value")
+
+    def wakealarm(self):
+        p = os.path.join(os.environ["DBB_STATE_DIR"], "wakealarm")
+        if not os.path.exists(p):
+            return None
+        with open(p) as f:
+            return f.read()
+
+    def test_tick_holds_at_night_and_writes_the_wake_request(self):
+        with mock.patch("time.time", return_value=self.at(23, 30)):
+            code, _, err = self.run_cli("tick")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.stop_value("BAT1"), "80")
+        self.assertEqual(self.stop_value("BAT0"), "80")
+        j = self.status()
+        self.assertEqual(j["overnight"]["phase"], "holding")
+        self.assertEqual(self.wakealarm(), f"{int(j['overnight']['topoff_start_ts'])}\n")
+
+    def test_tick_applies_overnight_even_with_auto_balance_off(self):
+        self.run_cli("config", "set", "general.auto_balance=false")
+        with mock.patch("time.time", return_value=self.at(23, 30)):
+            self.run_cli("tick")
+        self.assertEqual(self.stop_value("BAT1"), "80")
+
+    def test_tick_by_day_charges_full_and_leaves_no_wake_request(self):
+        with mock.patch("time.time", return_value=self.at(19, 0)):
+            self.run_cli("tick")
+        self.assertEqual(self.stop_value("BAT1"), "100")
+        self.assertEqual(self.wakealarm(), "")
+
+    def test_profile_set_applies_the_phase_immediately(self):
+        self.run_cli("profile", "set", "daily")
+        with mock.patch("time.time", return_value=self.at(23, 45)):
+            code, out, err = self.run_cli("profile", "set", "conference", "--stay")
+        self.assertEqual(code, 0, err)
+        self.assertIn("BAT1=70/80", out)
 
 
 if __name__ == "__main__":

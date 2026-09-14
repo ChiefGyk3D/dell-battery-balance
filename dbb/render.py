@@ -13,7 +13,7 @@
 
 import time
 
-from dbb import VERSION, policy, registry
+from dbb import VERSION, overnight, policy, registry
 from dbb.config import profile_type
 from dbb.sysfs import BATS, read_applied
 from dbb.state import STATE_FILE, now_iso
@@ -261,6 +261,8 @@ def state_json(state, s, cfg):
     out["profiles"] = [{"name": n, "label": p["label"], "type": profile_type(p), "active": n == name}
                        for n, p in sorted(cfg["profiles"].items())]
     out["revert"] = _revert_info(cfg, state, name, prof, now)
+    ov = overnight.ensure(state)
+    out["overnight"] = {"phase": ov["phase"], "topoff_start_ts": ov["topoff_start_ts"]}
     out["firmware"] = state.get("firmware", {})
     out["config_error"] = state.get("config_error")
     out["events"] = state.get("events", [])[-10:]

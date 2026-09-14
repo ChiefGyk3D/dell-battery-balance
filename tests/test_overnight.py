@@ -152,3 +152,170 @@ class Estimate(TZBase):
             self.ov.record_charge_current(self.state, sample(0, BAT0=bat(status="Charging", current=920_000)))
         s = sample(0, BAT0=bat(charge_now=3680000))
         self.assertAlmostEqual(self.ov.estimate_topoff_s(self.state, s, 0), 3600 + 1200)
+
+
+class Machine(TZBase):
+    """Local clock America/New_York; dates in August 2026 (EDT, no DST edge)."""
+
+    def setUp(self):
+        super().setUp()
+        from dbb import config, policy, state as st
+        self.config, self.policy, self.st = config, policy, st
+        self.cfg = config.default_config()
+        self.cfg["general"]["active_profile"] = "conference"
+        self.state = st.new_state()
+
+    def at(self, h, mi, day=5):
+        return local_ts(2026, 8, day, h, mi)
+
+    def both(self, cap=60, charge=2760000, ac=1, ts=None):
+        return sample(ts if ts is not None else self.at(20, 0), ac=ac,
+                      BAT0=bat(capacity=cap, charge_now=charge), BAT1=bat(capacity=cap, charge_now=charge))
+
+    def resolve(self, s, now):
+        return self.policy.resolve(self.cfg, self.state, s, now)
+
+    def test_plug_in_by_day_charges_full(self):
+        now = self.at(19, 0)
+        self.assertEqual(self.ov.step(self.cfg, self.state, self.both(), now), "charging_full")
+        self.assertEqual(self.resolve(self.both(), now).bands, {"BAT0": (90, 100), "BAT1": (90, 100)})
+        self.assertIn("charging to 100% until 23:00, then hold", self.state["events"][-1]["detail"])
+
+    def test_plug_in_at_night_holds(self):
+        now = self.at(23, 30)
+        self.assertEqual(self.ov.step(self.cfg, self.state, self.both(), now), "holding")
+        self.assertEqual(self.resolve(self.both(), now).bands, {"BAT0": (70, 80), "BAT1": (70, 80)})
+        ov = self.state["overnight"]
+        self.assertEqual(ov["leave_ts"], self.at(7, 0, day=6))
+        est = self.ov.estimate_topoff_s(self.state, self.both(), 30)
+        self.assertAlmostEqual(ov["topoff_start_ts"], ov["leave_ts"] - est)
+        self.assertIn("holding 70/80, top-off", self.state["events"][-1]["detail"])
+        self.assertIn("for 07:00", self.state["events"][-1]["detail"])
+
+    def test_window_opening_moves_charging_full_to_holding(self):
+        self.ov.step(self.cfg, self.state, self.both(), self.at(22, 58))
+        self.assertEqual(self.ov.step(self.cfg, self.state, self.both(), self.at(23, 0)), "holding")
+
+    def test_holding_to_topping_when_due(self):
+        self.ov.step(self.cfg, self.state, self.both(), self.at(23, 30))
+        start = self.state["overnight"]["topoff_start_ts"]
+        self.assertEqual(self.ov.step(self.cfg, self.state, self.both(ts=start - 60), start - 60), "holding")
+        self.assertEqual(self.ov.step(self.cfg, self.state, self.both(ts=start), start), "topping")
+        self.assertEqual(self.resolve(self.both(), start).bands, {"BAT0": (90, 100), "BAT1": (90, 100)})
+        self.assertTrue(self.state["events"][-1]["detail"].startswith("top-off started"))
+        self.assertIn("ready by 07:00", self.state["events"][-1]["detail"])
+        self.assertIsNone(self.state["overnight"]["topoff_start_ts"])
+
+    def test_immediate_topping_when_plugged_in_close_to_departure(self):
+        now = self.at(6, 30)
+        self.assertEqual(self.ov.step(self.cfg, self.state, self.both(), now), "topping")
+
+    def test_topping_stays_past_departure_until_unplugged(self):
+        self.ov.step(self.cfg, self.state, self.both(), self.at(6, 30))
+        self.assertEqual(self.ov.step(self.cfg, self.state, self.both(), self.at(9, 0)), "topping")
+        self.assertEqual(self.ov.step(self.cfg, self.state, self.both(ac=0), self.at(9, 2)), "off")
+
+    def test_manual_topoff_from_holding(self):
+        self.ov.step(self.cfg, self.state, self.both(), self.at(23, 30))
+        self.ov.set_manual(self.state, "topoff")
+        self.assertEqual(self.ov.step(self.cfg, self.state, self.both(), self.at(23, 32)), "topping")
+        self.assertIn("top-off started now", self.state["events"][-1]["detail"])
+
+    def test_manual_night_from_charging_full_notes_packs_above_hold(self):
+        s = sample(self.at(20, 0), BAT0=bat(capacity=96, charge_now=4416000), BAT1=bat(capacity=40, charge_now=1840000))
+        self.ov.step(self.cfg, self.state, s, self.at(20, 0))
+        self.ov.set_manual(self.state, "night")
+        self.assertEqual(self.ov.step(self.cfg, self.state, s, self.at(20, 2)), "holding")
+        d = self.state["events"][-1]["detail"]
+        self.assertIn("BAT0 is at 96%, above the 80% hold; the firmware cannot lower it", d)
+        self.assertNotIn("BAT1 is at", d)
+
+    def test_unplug_resets_and_clears_manual(self):
+        self.ov.step(self.cfg, self.state, self.both(), self.at(20, 0))
+        self.ov.set_manual(self.state, "night")
+        self.assertEqual(self.ov.step(self.cfg, self.state, self.both(ac=0), self.at(20, 2)), "off")
+        ov = self.state["overnight"]
+        self.assertIsNone(ov["manual"])
+        self.assertIsNone(ov["topoff_start_ts"])
+        self.assertIn("unplugged", self.state["events"][-1]["detail"])
+
+    def test_pins_win_over_the_hold(self):
+        self.cfg["profiles"]["conference"]["pins"] = {"BAT1": {"start": 55, "stop": 70}}
+        now = self.at(23, 30)
+        self.ov.step(self.cfg, self.state, self.both(), now)
+        self.assertEqual(self.resolve(self.both(), now).bands, {"BAT0": (70, 80), "BAT1": (55, 70)})
+
+    def test_full_mode_is_inert(self):
+        self.cfg["profiles"]["conference"]["overnight"]["mode"] = "full"
+        now = self.at(23, 30)
+        self.assertEqual(self.ov.step(self.cfg, self.state, self.both(), now), "off")
+        self.assertEqual(self.resolve(self.both(), now).bands, {"BAT0": (90, 100), "BAT1": (90, 100)})
+        self.assertFalse(self.ov.is_topoff_profile(self.cfg["profiles"]["conference"]))
+
+    def test_other_profiles_are_untouched(self):
+        self.cfg["general"]["active_profile"] = "field"
+        now = self.at(23, 30)
+        self.assertEqual(self.ov.step(self.cfg, self.state, self.both(), now), "off")
+        self.assertEqual(self.resolve(self.both(), now).bands, {"BAT0": (90, 100), "BAT1": (90, 100)})
+
+    def test_leave_at_override_is_used_then_consumed(self):
+        now = self.at(23, 30)
+        self.assertEqual(self.ov.set_leave_at(self.state, "06:00", now), self.at(6, 0, day=6))
+        self.ov.step(self.cfg, self.state, self.both(), now)
+        self.assertEqual(self.state["overnight"]["leave_ts"], self.at(6, 0, day=6))
+        # the override has passed: back to the profile's 07:00, with an event
+        later = self.at(6, 1, day=6)
+        self.ov.step(self.cfg, self.state, self.both(ac=0), later)
+        self.ov.step(self.cfg, self.state, self.both(), self.at(23, 30, day=6))
+        self.assertIsNone(self.state["overnight"]["leave_at_override_ts"])
+        self.assertEqual(self.state["overnight"]["leave_ts"], self.at(7, 0, day=7))
+        self.assertTrue(any("override 06:00 has passed" in e["detail"] for e in self.state["events"]))
+
+    def test_set_leave_at_none_clears(self):
+        self.ov.set_leave_at(self.state, "06:00", self.at(20, 0))
+        self.assertIsNone(self.ov.set_leave_at(self.state, None, self.at(20, 0)))
+        self.assertIsNone(self.state["overnight"]["leave_at_override_ts"])
+
+    def test_switch_profile_clears_the_override(self):
+        self.ov.set_leave_at(self.state, "06:00", self.at(20, 0))
+        self.policy.switch_profile(self.cfg, self.state, "daily", self.at(20, 1), "test")
+        self.assertIsNone(self.state["overnight"]["leave_at_override_ts"])
+
+    def test_wakealarm_text_only_while_holding(self):
+        self.assertEqual(self.ov.wakealarm_text(self.state), "")
+        self.ov.step(self.cfg, self.state, self.both(), self.at(23, 30))
+        start = self.state["overnight"]["topoff_start_ts"]
+        self.assertEqual(self.ov.wakealarm_text(self.state), f"{int(start)}\n")
+        self.ov.step(self.cfg, self.state, self.both(ts=start), start)
+        self.assertEqual(self.ov.wakealarm_text(self.state), "")
+
+    def test_write_wakealarm(self):
+        import tempfile
+        from pathlib import Path
+        self.ov.step(self.cfg, self.state, self.both(), self.at(23, 30))
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "wakealarm"
+            self.ov.write_wakealarm(self.state, p)
+            self.assertEqual(p.read_text(), self.ov.wakealarm_text(self.state))
+            self.ov.step(self.cfg, self.state, self.both(ac=0), self.at(23, 32))
+            self.ov.write_wakealarm(self.state, p)
+            self.assertEqual(p.read_text(), "")
+
+    def test_describe(self):
+        prof = self.cfg["profiles"]["conference"]
+        self.assertIsNone(self.ov.describe(self.cfg["profiles"]["field"], self.state, self.both(), self.at(20, 0)))
+        self.assertIn("on battery", self.ov.describe(prof, self.state, self.both(ac=0), self.at(20, 0)))
+        self.ov.step(self.cfg, self.state, self.both(), self.at(20, 0))
+        self.assertEqual(self.ov.describe(prof, self.state, self.both(), self.at(20, 0)),
+                         "overnight: charging to 100% until 23:00, then hold")
+        self.ov.step(self.cfg, self.state, self.both(), self.at(23, 30))
+        text = self.ov.describe(prof, self.state, self.both(), self.at(23, 30))
+        self.assertTrue(text.startswith("overnight: holding 70/80, top-off "), text)
+        self.assertIn(") for 07:00", text)
+        self.ov.set_manual(self.state, "topoff")
+        self.ov.step(self.cfg, self.state, self.both(), self.at(23, 32))
+        self.assertEqual(self.ov.describe(prof, self.state, self.both(), self.at(23, 32)),
+                         "overnight: topping off, ready by 07:00")
+        prof["overnight"]["mode"] = "full"
+        self.assertEqual(self.ov.describe(prof, self.state, self.both(), self.at(23, 32)),
+                         "overnight: mode full, packs stay at 100% on AC")

@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from dbb import VERSION, apply as apply_mod, config as cfg_mod, metrics, policy, registry, render
+from dbb import VERSION, apply as apply_mod, config as cfg_mod, metrics, overnight, policy, registry, render
 from dbb.state import add_event, append_log, load_state, now_iso, prune_sample_logs, save_state
 from dbb.sysfs import BATS, sample_all
 from dbb.wear import efc, integrate
@@ -130,6 +130,25 @@ def _apply(cfg, state, sample, res):
     return r
 
 
+def _write_wakealarm(state):
+    """Best effort like metrics: the wake request must never fail a tick."""
+    try:
+        overnight.write_wakealarm(state)
+    except OSError as e:
+        print(f"warning: wake request not written: {e}", file=sys.stderr)
+
+
+def _step_resolve_apply(cfg, state, sample, now=None):
+    """Advance the overnight machine, resolve bands for the active profile
+    (after any switch the caller made), write them, record the wake request."""
+    now = now or time.time()
+    overnight.step(cfg, state, sample, now)
+    res = policy.resolve(cfg, state, sample, now)
+    r = _apply(cfg, state, sample, res)
+    _write_wakealarm(state)
+    return res, r
+
+
 def _switch_and_apply(cfg, state, name, reason, one_off_hours=None):
     now = time.time()
     policy.switch_profile(cfg, state, name, now, reason)
@@ -137,8 +156,7 @@ def _switch_and_apply(cfg, state, name, reason, one_off_hours=None):
         state["one_off_revert_hours"] = one_off_hours
     _save_config(cfg, state, "switching profile")
     sample = sample_all()
-    res = policy.resolve(cfg, state, sample, now)
-    r = _apply(cfg, state, sample, res)
+    res, r = _step_resolve_apply(cfg, state, sample, now)
     save_state(state)
     print(f"profile -> {name}: " + ", ".join(f"{s}={b[0]}/{b[1]}" for s, b in sorted(res.bands.items())))
     for s, e in r["errors"].items():
@@ -190,11 +208,16 @@ def cmd_tick(args):
         add_event(state, "log", f"removed {name} (keeping {keep} years of samples)")
     now = time.time()
     res = policy.resolve(cfg, state, sample, now)
-    if res.revert:
+    reverted = bool(res.revert)
+    if reverted:
         policy.switch_profile(cfg, state, res.revert["to"], now, f"revert: {res.revert['reason']}")
         _save_config(cfg, state, "auto-revert")
-    if cfg["general"]["auto_balance"] or res.revert:
+    before = (state.get("overnight") or {}).get("phase", "off")
+    phase = overnight.step(cfg, state, sample, now)
+    res = policy.resolve(cfg, state, sample, now)     # bands now reflect the overnight phase
+    if cfg["general"]["auto_balance"] or reverted or phase != "off" or before != "off":
         _apply(cfg, state, sample, res)
+    _write_wakealarm(state)
     save_state(state)
     _write_metrics(state, sample, cfg)
 

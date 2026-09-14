@@ -128,3 +128,151 @@ def estimate_topoff_s(state, sample, margin_min):
             continue
         total += deficit / median_charge_ua(state, b) * 3600.0 + CV_TAIL_S
     return total
+
+
+# ------------------------------------------------------- state machine
+
+def is_topoff_profile(profile):
+    ov = profile.get("overnight")
+    return bool(ov) and ov.get("mode") == "topoff"
+
+
+def leave_ts(state, profile, now_ts):
+    """The departure the estimate targets: a one-off override while it is
+    still ahead, else the next occurrence of the profile's leave_at."""
+    ov = ensure(state)
+    o = ov["leave_at_override_ts"]
+    if o is not None:
+        if o > now_ts:
+            return o
+        ov["leave_at_override_ts"] = None
+        add_event(state, "overnight",
+                  f"leave-at override {fmt_local(o)} has passed; back to {profile['overnight']['leave_at']}")
+    return next_occurrence(now_ts, profile["overnight"]["leave_at"])
+
+
+def set_manual(state, which):
+    if which not in ("topoff", "night"):
+        raise ValueError(which)
+    ensure(state)["manual"] = which
+
+
+def set_leave_at(state, hhmm, now_ts, tomorrow=False):
+    ov = ensure(state)
+    ov["leave_at_override_ts"] = None if hhmm is None else next_occurrence(now_ts, hhmm, tomorrow)
+    return ov["leave_at_override_ts"]
+
+
+def _reset(ov):
+    ov.update(phase="off", since_ts=None, topoff_start_ts=None, leave_ts=None, manual=None)
+
+
+def _enter(state, ov, phase, now_ts, detail):
+    ov["phase"] = phase
+    ov["since_ts"] = now_ts
+    if phase != "holding":
+        ov["topoff_start_ts"] = None      # empties the wake request
+    add_event(state, "overnight", detail)
+
+
+def _plan_hold(state, ov, prof, sample, now_ts):
+    o = prof["overnight"]
+    ov["leave_ts"] = leave_ts(state, prof, now_ts)
+    ov["topoff_start_ts"] = ov["leave_ts"] - estimate_topoff_s(state, sample, o["margin_min"])
+
+
+def step(cfg, state, sample, now_ts):
+    """Advance the machine one tick. Returns the phase. Only the tick and the
+    control-class commands call this; status never does."""
+    ov = ensure(state)
+    record_charge_current(state, sample)
+    prof = cfg["profiles"][cfg["general"]["active_profile"]]
+    if not is_topoff_profile(prof) or sample["ac_online"] != 1:
+        if ov["phase"] != "off":
+            why = "unplugged" if is_topoff_profile(prof) else "profile changed"
+            add_event(state, "overnight", f"{why}; overnight off")
+        _reset(ov)
+        return "off"
+    o = prof["overnight"]
+    hold = o["hold"]
+    if ov["manual"] == "topoff" and ov["phase"] != "topping":
+        ov["leave_ts"] = leave_ts(state, prof, now_ts)
+        _enter(state, ov, "topping", now_ts, f"top-off started now; ready by {fmt_local(ov['leave_ts'])}")
+        return ov["phase"]
+    if ov["phase"] in ("off", "charging_full"):
+        if ov["manual"] == "night" or in_window(now_ts, o["night_from"], o["leave_at"]):
+            above = [f"{b} is at {v['capacity']}%, above the {hold[1]}% hold; the firmware cannot lower it"
+                     for b, v in sorted(sample["bats"].items())
+                     if v.get("capacity") is not None and v["capacity"] > hold[1]]
+            _plan_hold(state, ov, prof, sample, now_ts)
+            _enter(state, ov, "holding", now_ts,
+                   f"holding {hold[0]}/{hold[1]}, top-off {fmt_local(ov['topoff_start_ts'])} "
+                   f"for {fmt_local(ov['leave_ts'])}" + "".join("; " + a for a in above))
+        elif ov["phase"] == "off":
+            _enter(state, ov, "charging_full", now_ts,
+                   f"charging to {prof['bands']['all'][1]}% until {o['night_from']}, then hold")
+    if ov["phase"] == "holding":
+        _plan_hold(state, ov, prof, sample, now_ts)
+        if now_ts >= ov["topoff_start_ts"]:
+            _enter(state, ov, "topping", now_ts, f"top-off started; ready by {fmt_local(ov['leave_ts'])}")
+    return ov["phase"]
+
+
+def apply_phase(profile, state, bands):
+    """Pure: while holding, every present slot that is not pinned takes the
+    hold band. Everything else is the profile's own band."""
+    if not is_topoff_profile(profile):
+        return bands
+    ov = state.get("overnight") or {}
+    if ov.get("phase") != "holding":
+        return bands
+    hold = clamp_band(*profile["overnight"]["hold"])
+    pins = profile.get("pins", {})
+    return {s: (hold if s not in pins else b) for s, b in bands.items()}
+
+
+def describe(profile, state, sample, now_ts):
+    """The one-line status of the overnight machinery, or None for a
+    profile without an overnight table. Shared by status, the CLI actions
+    and the applet."""
+    o = profile.get("overnight")
+    if not o:
+        return None
+    if o["mode"] == "full":
+        return "overnight: mode full, packs stay at 100% on AC"
+    ov = ensure(state)
+    note = ""
+    if ov["leave_at_override_ts"] is not None and ov["leave_at_override_ts"] > now_ts:
+        note = f" (leaving at {fmt_local(ov['leave_at_override_ts'])} set)"
+    if sample.get("ac_online") != 1:
+        return (f"overnight: on battery; on AC it holds {o['hold'][0]}/{o['hold'][1]} from "
+                f"{o['night_from']} and tops off for {o['leave_at']}{note}")
+    ph = ov["phase"]
+    if ph == "charging_full":
+        return f"overnight: charging to {profile['bands']['all'][1]}% until {o['night_from']}, then hold{note}"
+    if ph == "holding":
+        mins = max(0, int((ov["topoff_start_ts"] - now_ts) // 60))
+        return (f"overnight: holding {o['hold'][0]}/{o['hold'][1]}, top-off {fmt_local(ov['topoff_start_ts'])} "
+                f"({mins // 60}h{mins % 60:02d}m) for {fmt_local(ov['leave_ts'])}{note}")
+    if ph == "topping":
+        return f"overnight: topping off, ready by {fmt_local(ov['leave_ts'])}{note}"
+    return f"overnight: off{note}"
+
+
+# ------------------------------------------------------- wake request
+
+def wakealarm_text(state):
+    ov = state.get("overnight") or {}
+    ts = ov.get("topoff_start_ts") if ov.get("phase") == "holding" else None
+    return f"{int(ts)}\n" if ts else ""
+
+
+def write_wakealarm(state, path=None):
+    """Rewritten every tick: the epoch the root wake helper should program
+    into the RTC while holding, empty otherwise."""
+    path = path or WAKEALARM_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(wakealarm_text(state))
+    os.replace(tmp, path)
+    _make_readable(path, 0o664)

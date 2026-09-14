@@ -12,7 +12,7 @@
 """Turn config + measured state into the bands each slot should hold."""
 from dataclasses import dataclass
 
-from dbb import registry
+from dbb import overnight, registry
 from dbb.config import profile_type
 from dbb.state import add_event
 from dbb.sysfs import BATS, clamp_band
@@ -91,6 +91,7 @@ def switch_profile(cfg, state, name, now, reason):
     g["active_profile"] = name
     state["profile_switched_ts"] = now
     state["one_off_revert_hours"] = None
+    overnight.ensure(state)["leave_at_override_ts"] = None
     add_event(state, "profile", f"-> {name} ({reason})")
 
 
@@ -136,5 +137,8 @@ def resolve(cfg, state, sample, now):
         if roles is None and present:
             why = f"{name}: single pack, neutral band"
     bands = _bands_for_profile(profile, roles, present)
+    if ptype == "conference":
+        bands = overnight.apply_phase(profile, state, bands)
+        why = f"{name}: overnight {(state.get('overnight') or {}).get('phase', 'off')}"
     return Resolution(bands=bands, profile=name, profile_type=ptype,
                       roles=roles, why=why, revert=revert)
