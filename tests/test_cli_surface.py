@@ -27,6 +27,7 @@ DOCUMENTED = [
     ["config", "validate", "x.toml"], ["config", "validate", "--json", "x.json"],
     ["config", "apply", "x.toml"], ["config", "apply", "--json", "x.json"],
     ["field"], ["field", "--for", "3d"], ["field", "--stay"], ["restore"],
+    ["topoff", "now"], ["night"], ["leave-at", "06:00"], ["leave-at", "06:00", "--tomorrow"], ["leave-at", "none"],
     ["pack", "list"], ["pack", "assign", "BAT0", "A"], ["pack", "new", "BAT0", "A"],
     ["pack", "same", "BAT0"], ["pack", "reassign", "3", "A"], ["pack", "rename", "A", "B"],
     ["pack", "retire", "A"], ["pack", "unretire", "A"], ["pack", "swap"],
@@ -35,7 +36,7 @@ DOCUMENTED = [
 ]
 
 ROW = re.compile(r"^\| `([^`]+)`")
-GROUPS = ("profile", "config", "pack")
+GROUPS = ("profile", "config", "pack", "topoff")
 
 
 def _subparser_choices(parser):

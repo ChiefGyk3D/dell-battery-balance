@@ -446,6 +446,56 @@ def cmd_restore(args):
     sys.exit(_switch_and_apply(cfg, state, cfg["general"]["previous_profile"], "cli restore"))
 
 
+def _require_topoff_profile(cfg):
+    prof = cfg["profiles"][cfg["general"]["active_profile"]]
+    if not overnight.is_topoff_profile(prof):
+        die("error: the active profile is not a conference profile in topoff mode "
+            "(profile create defcon --template conference; profile set defcon)", 2)
+    return prof
+
+
+def _quick(which):
+    state, cfg, s = _view()
+    prof = _require_topoff_profile(cfg)
+    if s["ac_online"] != 1:
+        die("error: not on AC; nothing to hold or top off", 2)
+    overnight.set_manual(state, which)
+    now = time.time()
+    res, r = _step_resolve_apply(cfg, state, s, now)
+    save_state(state)
+    print(overnight.describe(prof, state, s, now))
+    for slot, e in r["errors"].items():
+        print(f"  {slot}: {e}", file=sys.stderr)
+    sys.exit(0 if not r["errors"] else 2)
+
+
+def cmd_topoff_now(args):
+    _quick("topoff")
+
+
+def cmd_night(args):
+    _quick("night")
+
+
+def cmd_leave_at(args):
+    state, cfg, s = _view()
+    prof = _require_topoff_profile(cfg)
+    now = time.time()
+    if args.when.strip().lower() in ("none", "off", "clear"):
+        overnight.set_leave_at(state, None, now)
+        add_event(state, "overnight", "leave-at override cleared")
+    else:
+        try:
+            ts = overnight.set_leave_at(state, args.when, now, tomorrow=args.tomorrow)
+        except ValueError as e:
+            die(f"error: {e}")
+        add_event(state, "overnight", f"leaving at {time.strftime('%a %H:%M', time.localtime(ts))}")
+    if s["ac_online"] == 1:
+        _step_resolve_apply(cfg, state, s, now)
+    save_state(state)
+    print(overnight.describe(prof, state, s, now))
+
+
 def _registry_op(fn, *a, needs_cfg=False, **kw):
     """Load state, apply a pure registry edit, save. Never samples/integrates:
     these commands only change identity bookkeeping, not wear counters.
@@ -625,6 +675,13 @@ def build_parser():
     g.add_argument("--stay", action="store_true")
     sp.set_defaults(func=cmd_field, cls="control")
     sub.add_parser("restore", help="alias: profile set <previous>").set_defaults(func=cmd_restore, cls="control")
+    tp = sub.add_parser("topoff", help="conference profile: top off now").add_subparsers(dest="tcmd", required=True)
+    tp.add_parser("now", help="charge both packs to 100% now and stay there until unplugged").set_defaults(func=cmd_topoff_now, cls="control")
+    sub.add_parser("night", help="conference profile: in for the night, start the hold now").set_defaults(func=cmd_night, cls="control")
+    sp = sub.add_parser("leave-at", help="conference profile: one-off departure time for the next top-off")
+    sp.add_argument("when", metavar="HH:MM|none")
+    sp.add_argument("--tomorrow", action="store_true", help="tomorrow's HH:MM even if today's is still ahead")
+    sp.set_defaults(func=cmd_leave_at, cls="control")
     sp = sub.add_parser("reset", help="clear counters")
     g = sp.add_mutually_exclusive_group(required=True)
     g.add_argument("--slot", choices=BATS); g.add_argument("--pack", metavar="NAME"); g.add_argument("--all", action="store_true")

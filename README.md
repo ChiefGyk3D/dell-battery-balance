@@ -260,6 +260,9 @@ does not recognize even though it is valid, equivalent TOML.
 | `config apply [--json] <path>` | replace the whole config from a TOML file, or with `--json` a JSON document of the same shape (must be complete and valid) |
 | `field [--for <duration> \| --stay]` | alias: `profile set field` |
 | `restore` | alias: `profile set <previous_profile>` |
+| `topoff now` | conference profile: lift the overnight hold now, charge both packs to 100% and stay there until unplugged — for going back out to the CTF |
+| `night` | conference profile: in for the night — start the hold now instead of waiting for `night_from` |
+| `leave-at <HH:MM \| none> [--tomorrow]` | conference profile: one-off departure time for the next top-off (the next occurrence of HH:MM; `--tomorrow` forces tomorrow's); `none` goes back to the profile's `leave_at` |
 | `pack list` | list known packs (EFC, calendar score, slot/bench/retired) and any pending identity questions |
 | `pack assign <slot> <name>` | identify the pack in `<slot>` as an existing named pack |
 | `pack new <slot> <name>` | register the pack in `<slot>` as a brand-new named pack |

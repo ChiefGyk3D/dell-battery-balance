@@ -926,6 +926,66 @@ class Overnight(CliBase):
         self.assertEqual(code, 0, err)
         self.assertIn("BAT1=70/80", out)
 
+    def test_topoff_now_from_holding(self):
+        with mock.patch("time.time", return_value=self.at(23, 30)):
+            self.run_cli("tick")
+            code, out, err = self.run_cli("topoff", "now")
+        self.assertEqual(code, 0, err)
+        self.assertIn("topping off, ready by 07:00", out)
+        self.assertEqual(self.stop_value("BAT1"), "100")
+        self.assertEqual(self.wakealarm(), "")
+
+    def test_night_from_charging_full(self):
+        with mock.patch("time.time", return_value=self.at(20, 0)):
+            self.run_cli("tick")
+            code, out, err = self.run_cli("night")
+        self.assertEqual(code, 0, err)
+        self.assertIn("holding 70/80", out)
+        self.assertEqual(self.stop_value("BAT1"), "80")
+
+    def test_quick_actions_refuse_on_battery(self):
+        self.fs.ac(0)
+        for argv in (["topoff", "now"], ["night"]):
+            with self.subTest(argv=argv):
+                code, _, err = self.run_cli(*argv)
+                self.assertEqual(code, 2)
+                self.assertIn("not on AC", err)
+
+    def test_quick_actions_refuse_outside_a_topoff_profile(self):
+        self.run_cli("profile", "set", "field")
+        for argv in (["topoff", "now"], ["night"], ["leave-at", "06:00"]):
+            with self.subTest(argv=argv):
+                code, _, err = self.run_cli(*argv)
+                self.assertEqual(code, 2)
+                self.assertIn("not a conference profile", err)
+
+    def test_leave_at_sets_clears_and_replans(self):
+        with mock.patch("time.time", return_value=self.at(23, 30)):
+            self.run_cli("tick")
+            code, out, err = self.run_cli("leave-at", "06:00")
+            self.assertEqual(code, 0, err)
+            self.assertIn("for 06:00", out)
+            self.assertIn("(leaving at 06:00 set)", out)
+            j = self.status()
+            self.assertEqual(j["overnight"]["topoff_start_ts"] < self.at(6, 0, day=6), True)
+            code, out, _ = self.run_cli("leave-at", "none")
+            self.assertEqual(code, 0)
+            self.assertIn("for 07:00", out)
+            self.assertNotIn("leaving at", out)
+
+    def test_leave_at_tomorrow_and_bad_time(self):
+        with mock.patch("time.time", return_value=self.at(3, 0)):
+            code, out, _ = self.run_cli("leave-at", "07:30", "--tomorrow")
+            self.assertEqual(code, 0)
+            code, _, err = self.run_cli("leave-at", "7am")
+            self.assertEqual(code, 1)
+            self.assertIn("bad time", err)
+
+    def test_quick_actions_are_control_class(self):
+        with mock.patch("time.time", return_value=self.at(20, 0)):
+            code, _, _ = self.run_cli("--polkit-class", "control", "--", "night")
+        self.assertEqual(code, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
