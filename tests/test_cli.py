@@ -1,4 +1,5 @@
 import io, json, os, sys, tempfile, time, unittest
+from pathlib import Path
 from contextlib import redirect_stdout, redirect_stderr
 from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
@@ -822,6 +823,69 @@ class Packs(CliBase):
         self.run_cli("sample")
         with open(os.path.join(d, "state.json")) as fh:
             self.assertEqual(_json.load(fh)["version"], 2)
+
+
+class PackIdentity(CliBase):
+    """End to end through the CLI: genuine packs are recognised by their
+    fingerprint, and the fingerprint never leaves state.json."""
+    EPPIDS = {"BAT0": "CN0XXXXXSLW0000E00AAA01", "BAT1": "CN0XXXXXSLW0000E00ABA01"}
+
+    def ident(self, slot, eppid, serial):
+        self.fs._w(f"class/power_supply/{slot}/eppid", eppid)
+        self.fs._w(f"class/power_supply/{slot}/serial_number", serial)
+
+    def setUp(self):
+        super().setUp()
+        self.ident("BAT0", self.EPPIDS["BAT0"], "101")
+        self.ident("BAT1", self.EPPIDS["BAT1"], "102")
+        self.run_cli("tick")
+        self.run_cli("pack", "new", "BAT0", "Alpha")
+        self.run_cli("pack", "new", "BAT1", "Bravo")
+        self.run_cli("tick")
+
+    def test_learned_and_listed(self):
+        code, out, err = self.run_cli("pack", "list")
+        self.assertEqual(code, 0, err)
+        self.assertRegex(out, r"Alpha .* id read ")
+        code, out, _ = self.run_cli("pack", "identity", "Alpha", "show")
+        self.assertIn(self.EPPIDS["BAT0"] + "/101", out)
+
+    def test_swap_recognised_without_a_question(self):
+        self.fs.bat("BAT0", present=0)
+        self.fs.bat("BAT1", present=0)
+        for _ in range(2):
+            self.run_cli("tick")
+        self.fs.bat("BAT0", capacity=60, charge_now=2760000, status="Discharging")
+        self.fs.bat("BAT1", capacity=100, charge_now=4600000, status="Full")
+        self.ident("BAT0", self.EPPIDS["BAT1"], "102")
+        self.ident("BAT1", self.EPPIDS["BAT0"], "101")
+        self.run_cli("tick")
+        self.assertEqual(sorted(self.status()["pending"]), ["BAT0", "BAT1"])
+        self.run_cli("tick")
+        j = self.status()
+        self.assertEqual(j["pending"], {})
+        self.assertEqual((j["bats"]["BAT0"]["pack"], j["bats"]["BAT1"]["pack"]), ("Bravo", "Alpha"))
+
+    def test_fingerprint_stays_in_state(self):
+        _, out, _ = self.run_cli("status", "--json")
+        _, prom, _ = self.run_cli("status", "--prometheus")
+        _, text, _ = self.run_cli("status")
+        d = os.environ["DBB_STATE_DIR"]
+        logs = "".join(Path(d, n).read_text() for n in os.listdir(d) if n.endswith(".csv"))
+        self.assertTrue(logs)
+        for where, blob in (("json", out), ("prometheus", prom), ("status", text), ("sample log", logs),
+                            ("metrics.prom", Path(d, "metrics.prom").read_text())):
+            for e in self.EPPIDS.values():
+                self.assertNotIn(e, blob, where)
+        self.assertEqual({p["name"]: p["identity"] for p in json.loads(out)["packs"]},
+                         {"Alpha": "read", "Bravo": "read"})
+
+    def test_unreadable_needs_pack_admin(self):
+        code, _, _ = self.run_cli("--polkit-class", "control", "--", "pack", "identity", "Alpha", "unreadable")
+        self.assertNotEqual(code, 0)
+        code, _, err = self.run_cli("pack", "identity", "Alpha", "unreadable")
+        self.assertEqual(code, 0, err)
+        self.assertEqual({p["name"]: p["identity"] for p in self.status()["packs"]}["Alpha"], "unreadable")
 
 
 class ProfileTemplate(CliBase):

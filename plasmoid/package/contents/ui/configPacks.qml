@@ -25,6 +25,12 @@ KCM.SimpleKCM {
         return i18n("on the bench, %1 h", Math.round(pk.bench_hours || 0));
     }
 
+    function identity(pk) {
+        if (pk.identity === "read") return i18n("recognised by its identity");
+        if (pk.identity === "unreadable") return i18n("no readable identity");
+        return i18n("identity confirmed by you");
+    }
+
     ConfigBackend {
         id: backend
         onStatusLoaded: i => { page.info = i; }
@@ -54,7 +60,7 @@ KCM.SimpleKCM {
             wrapMode: Text.WordWrap
             opacity: 0.7
             font: Kirigami.Theme.smallFont
-            text: i18n("Changes on this page take effect immediately; each one asks for authorisation. The two packs are physically identical, so identity is only ever what you confirm here or in the popup.")
+            text: i18n("Changes on this page take effect immediately; each one asks for authorisation. A genuine Dell pack reports its own identity, and once named it is recognised on its own; a pack that reports none, or the same one as another pack (as counterfeit and third-party packs do), is only ever what you confirm here or in the popup.")
         }
 
         // ---- pending identity questions -------------------------------
@@ -138,10 +144,11 @@ KCM.SimpleKCM {
                     Layout.fillWidth: true
                     elide: Text.ElideRight
                     opacity: 0.8
-                    text: i18n("%1 EFC, calendar %2, %3",
+                    text: i18n("%1 EFC, calendar %2, %3, %4",
                                Number(row.modelData.efc).toFixed(2),
                                Number(row.modelData.calendar_score).toFixed(1),
-                               page.where(row.modelData))
+                               page.where(row.modelData),
+                               page.identity(row.modelData))
                 }
                 QQC2.TextField {
                     id: rename

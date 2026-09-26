@@ -226,9 +226,9 @@ def cmd_tick(args):
         save_state(state)
         return
     _note_good_sample(state)
-    integrate(state, sample)
-    append_log(sample)
     cfg = load_config_or_snapshot(state)
+    integrate(state, sample, cfg["general"]["bench_temp_c"])
+    append_log(sample)
     keep = cfg["general"].get("sample_log_years", cfg_mod.GENERAL_OPTIONAL["sample_log_years"])
     for name in prune_sample_logs(sample["ts"], keep):
         add_event(state, "log", f"removed {name} (keeping {keep} years of samples)")
@@ -273,7 +273,7 @@ def cmd_sample(args):
         save_state(state)
         die("error: no batteries present")
     _note_good_sample(state)
-    integrate(state, s)
+    integrate(state, s, load_config_or_snapshot(state)["general"]["bench_temp_c"])
     save_state(state)
     if not args.no_log:
         append_log(s)
@@ -576,7 +576,8 @@ def cmd_pack_list(args):
     for r in rows:
         where = r["in_slot"] or ("retired" if r["retired"] else "bench")
         extra = f"  out {r['bench_hours']:.0f}h at {r['removed_at_soc']}%" if (where == "bench" and r["removed_at_soc"] is not None) else ""
-        print(f"{r['name']:16} EFC {r['efc']:6.2f}  cal {r['calendar_score']:7.1f}  {where:8}{extra}")
+        print(f"{r['name']:16} EFC {r['efc']:6.2f}  cal {r['calendar_score']:7.1f}  "
+              f"id {r['identity']:10}  {where:8}{extra}")
     hint = registry.rotation_hint(state, cfg["general"]["deadband_efc"], now, cfg["general"]["bench_temp_c"], rows=rows)
     if hint:
         print(f"swap in next: {hint['swap_in']} for {hint['replace']} ({hint['behind_by_efc']:.2f} EFC behind)")
@@ -615,6 +616,18 @@ def cmd_pack_retire(args):
 
 def cmd_pack_unretire(args):
     _registry_op(registry.unretire_pack, args.name)
+
+
+def cmd_pack_identity(args):
+    if args.action == "show":
+        state = load_state()
+        p = state["packs"].get(args.name)
+        if p is None:
+            die(f"error: unknown pack {args.name}")
+        print(f"{args.name}: {registry.identity_state(p)}"
+              + (f"  {p['fingerprint']}" if p.get("fingerprint") else ""))
+        return
+    _registry_op(registry.set_identity, args.name, args.action)
 
 
 def cmd_reset(args):
@@ -722,6 +735,9 @@ def build_parser():
     sp.set_defaults(func=cmd_pack_retire, cls="pack-admin")
     sp = pk.add_parser("unretire"); sp.add_argument("name")
     sp.set_defaults(func=cmd_pack_unretire, cls="pack-admin")
+    sp = pk.add_parser("identity", help="show, forget or disable a pack's read identity")
+    sp.add_argument("name"); sp.add_argument("action", choices=("show", "forget", "unreadable"))
+    sp.set_defaults(func=cmd_pack_identity, cls="pack-admin")
 
     sp = sub.add_parser("field", help="alias: profile set field")
     g = sp.add_mutually_exclusive_group()

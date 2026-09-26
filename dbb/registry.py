@@ -11,10 +11,13 @@
 #
 """Pack registry: named physical packs, slot tenures, and occupancy changes.
 
-These packs expose no readable identity (identical serial, ePPID and
-manufacture date), so a slot is modelled as a sequence of *tenures* -- one
-per continuous occupancy. Wear accrues into the open tenure and never
-pauses; identity is a label on the tenure that the user confirms.
+A slot is modelled as a sequence of *tenures* -- one per continuous
+occupancy. Wear accrues into the open tenure and never pauses; identity is a
+label on the tenure. Genuine Dell packs carry a readable identity (ePPID via
+dell-wmi-ddv, plus the smart-battery serial), and once a named pack's
+fingerprint is learned a tenure is labelled from it without asking. Packs
+that report no identity, or share one (the tool's first two packs did, as
+counterfeit and third-party packs do), are asked about exactly as before.
 """
 import re
 
@@ -29,6 +32,9 @@ SAME_GUESS_PCT = 3.0
 DISCONTINUITY_PCT = 10.0
 DISCONTINUITY_WINDOW_S = 120.0
 BENCH_WARN_SOC = 70
+
+EPPID_MIN_LEN = 10
+CONFIRM_SAMPLES = 2   # consecutive agreeing samples before a reading counts
 
 
 class RegistryError(ValueError):
@@ -138,16 +144,23 @@ def guess_identity(prev_t, v, design_uah=None):
     return "unsure"
 
 
-def observe(state, slot, v, s, dt):
+def observe(state, slot, v, s, dt, fp=None):
     """Return (tenure, changed) for a present slot, opening a new tenure when
     the occupancy plausibly changed. The interval that trips a change is not
-    accrued anywhere -- it belongs to nobody."""
+    accrued anywhere -- it belongs to nobody. `fp` is the slot's confirmed
+    fingerprint, or None: a confirmed reading that contradicts the labelled
+    pack's is a change the charge heuristic cannot see (a swap that picked up
+    where the last pack left off)."""
     t = open_tenure(state, slot)
     reason = None
     if t is None:
         reason = "insert"
     else:
         reason = occupancy_change(t, v, dt)
+        if reason is None and fp and t["pack"]:
+            known = state["packs"][t["pack"]].get("fingerprint")
+            if known and known != fp:
+                reason = "identity"
     if reason:
         prev = close_tenure(state, slot, s["ts"]) if t is not None else last_closed_tenure(state, slot)
         t = new_tenure(state, slot, v, s["ts"])
@@ -197,10 +210,11 @@ def _new_pack(state, name):
     if name in state["packs"]:
         raise RegistryError(f"pack {name} already exists")
     state["packs"][name] = {"label": name, "first_seen": now_iso(), "retired": False,
-                            "notes": "", "removed_at_soc": None, "removed_ts": None}
+                            "notes": "", "removed_at_soc": None, "removed_ts": None,
+                            "fingerprint": None, "identity_unreadable": False}
 
 
-def assign(state, slot, name, new=False, now=None, bench_temp_c=25.0):
+def assign(state, slot, name, new=False, now=None, bench_temp_c=25.0, how=None):
     t = open_tenure(state, slot)
     if t is None:
         raise RegistryError(f"no pack present in {slot}")
@@ -230,7 +244,9 @@ def assign(state, slot, name, new=False, now=None, bench_temp_c=25.0):
         t["calendar_score"] += bench_hours * calendar_stress(p["removed_at_soc"], bench_temp_c)
     p["removed_at_soc"], p["removed_ts"] = None, None
     state.get("pending", {}).pop(slot, None)
-    add_event(state, "pack", f"{slot}: tenure {t['id']} identified as {name}")
+    add_event(state, "pack", f"{slot}: tenure {t['id']} identified as {name}"
+              + (" (identity read from the pack)" if how == "identity" else ""))
+    _hand_label(state, slot, name)
     return t
 
 
@@ -255,6 +271,7 @@ def reassign(state, tenure_id, name):
     t["pack"] = name
     if t["end_ts"] is None:
         state.get("pending", {}).pop(t["slot"], None)
+        _hand_label(state, t["slot"], name)
     add_event(state, "pack", f"tenure {tenure_id} reassigned {old} -> {name}")
     return t
 
@@ -272,8 +289,10 @@ def swap(state):
     if not t0["pack"] and not t1["pack"]:
         raise RegistryError("neither pack is identified; nothing to swap (use 'pack assign' / 'pack new')")
     t0["pack"], t1["pack"] = t1["pack"], t0["pack"]
-    for slot in BATS:
+    for slot, t in (("BAT0", t0), ("BAT1", t1)):
         state.get("pending", {}).pop(slot, None)
+        if t["pack"]:
+            _hand_label(state, slot, t["pack"])
     add_event(state, "pack", f"swap: BAT0 is now {t0['pack'] or '?'}, BAT1 is now {t1['pack'] or '?'}")
     return t0, t1
 
@@ -310,6 +329,127 @@ def unretire_pack(state, name):
         raise RegistryError(f"unknown pack {name}")
     state["packs"][name]["retired"] = False
     add_event(state, "pack", f"unretired {name}")
+
+
+# ---------------------------------------------------------------- identity
+
+def fingerprint(v):
+    """ePPID + serial, or None when the pack offers no usable ePPID (no
+    dell-wmi-ddv, blank, or a filler value)."""
+    e = (v.get("eppid") or "").strip()
+    if len(e) < EPPID_MIN_LEN or len(set(e)) == 1:
+        return None
+    return f"{e}/{(v.get('serial') or '').strip()}"
+
+
+def _ident(state):
+    return state.setdefault("identity", {"slots": {}, "twin_samples": 0})
+
+
+def read_identities(state, s):
+    """Fold sample s into the per-slot reading streaks and return each slot's
+    confirmed fingerprint (or None). Both slots reading one value is never an
+    identity: it is either BAT1's sysfs mirroring BAT0 for a sample (measured)
+    or two packs sharing one identity."""
+    ident = _ident(state)
+    raw = {b: fingerprint(v) for b, v in s["bats"].items() if v and v.get("present", 1) == 1}
+    twins = len(raw) == 2 and None not in raw.values() and len(set(raw.values())) == 1
+    ident["twin_samples"] = ident.get("twin_samples", 0) + 1 if twins else 0
+    out = {}
+    for b in BATS:
+        fp = None if twins else raw.get(b)
+        prev = ident["slots"].get(b) or {}
+        if fp is None:
+            ident["slots"][b] = None
+            out[b] = None
+            continue
+        n = prev.get("n", 0) + 1 if prev.get("fp") == fp else 1
+        ident["slots"][b] = {"fp": fp, "n": n}
+        out[b] = fp if n >= CONFIRM_SAMPLES else None
+    return out
+
+
+def slot_identity(state, slot):
+    rec = (state.get("identity") or {}).get("slots", {}).get(slot)
+    return rec["fp"] if rec and rec["n"] >= CONFIRM_SAMPLES else None
+
+
+def identity_state(p):
+    if p.get("identity_unreadable"):
+        return "unreadable"
+    return "read" if p.get("fingerprint") else "asked"
+
+
+def _owner(state, fp):
+    names = [n for n, p in state["packs"].items()
+             if p.get("fingerprint") == fp and not p["retired"] and not p.get("identity_unreadable")]
+    return names[0] if len(names) == 1 else None
+
+
+def _mark_unreadable(state, name):
+    p = state["packs"][name]
+    p["fingerprint"] = None
+    if p.get("identity_unreadable"):
+        return
+    p["identity_unreadable"] = True
+    add_event(state, "warning",
+              f"{name} reports the same identity (ePPID and serial) as another pack, "
+              "which is what counterfeit and third-party packs do; it will be asked "
+              "about, not read. Buy Dell OEM packs through authorized channels")
+
+
+def _hand_label(state, slot, name):
+    """A label set by hand that contradicts what the pack in the slot reports
+    wins, and the pack's learned fingerprint is dropped to be relearned."""
+    p = state["packs"][name]
+    fp = slot_identity(state, slot)
+    if fp and p.get("fingerprint") and p["fingerprint"] != fp:
+        p["fingerprint"] = None
+        add_event(state, "warning", f"{name}: labelled by hand against the identity "
+                  f"{slot} reports; its fingerprint is forgotten and will be relearned")
+
+
+def resolve_identities(state, ids, bench_temp_c=25.0):
+    """After a sample: label unidentified tenures whose confirmed fingerprint
+    belongs to exactly one known pack, learn the fingerprint of labelled
+    packs that have none, and give up on packs that turn out to share one."""
+    if _ident(state).get("twin_samples", 0) >= CONFIRM_SAMPLES:
+        for b in BATS:
+            t = open_tenure(state, b)
+            if t and t["pack"]:
+                _mark_unreadable(state, t["pack"])
+        return
+    for b in BATS:
+        fp, t = ids.get(b), open_tenure(state, b)
+        if not fp or t is None:
+            continue
+        if t["pack"] is None:
+            owner = _owner(state, fp)
+            if owner and owner not in packs_in_slots(state):
+                assign(state, b, owner, bench_temp_c=bench_temp_c, how="identity")
+            continue
+        p = state["packs"][t["pack"]]
+        if p.get("identity_unreadable") or p.get("fingerprint"):
+            continue
+        clash = [n for n, q in state["packs"].items() if n != t["pack"] and q.get("fingerprint") == fp]
+        if clash:
+            for n in clash + [t["pack"]]:
+                _mark_unreadable(state, n)
+            continue
+        p["fingerprint"] = fp
+        add_event(state, "pack", f"{t['pack']}: identity learned from the pack in {b}")
+
+
+def set_identity(state, name, action):
+    """'forget': drop the fingerprint (and any unreadable mark) and relearn.
+    'unreadable': never read this pack's identity; always ask."""
+    if name not in state["packs"]:
+        raise RegistryError(f"unknown pack {name}")
+    p = state["packs"][name]
+    p["fingerprint"] = None
+    p["identity_unreadable"] = action == "unreadable"
+    add_event(state, "pack", f"{name}: identity "
+              + ("marked unreadable" if action == "unreadable" else "forgotten, will be relearned"))
 
 
 # --------------------------------------------------------------- migration
@@ -374,6 +514,7 @@ def pack_totals(state, name, now, bench_temp_c):
         "tenures": len(tenures),
         "retired": p["retired"],
         "removed_at_soc": p.get("removed_at_soc"),
+        "identity": identity_state(p),
     }
 
 

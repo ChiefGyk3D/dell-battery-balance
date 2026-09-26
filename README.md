@@ -162,14 +162,65 @@ actually know.
 
 ## Packs and swapping
 
-**Label each pack physically** — a sticker with the name you register it
-under (`A`, `B`, or whatever you pick) — the moment you name it. The tool
-has no way to tell the packs apart electrically, so a wrong `pack same` or
-`pack assign` silently corrupts that pack's wear history, and there is no
-way to detect the mistake after the fact.
+> [!WARNING]
+> **Use genuine Dell packs, bought through Dell or an authorized reseller.**
+> Pack recognition depends on each pack reporting its own identity. The two
+> packs this tool was first developed against both reported the same serial
+> (`88`) and the same ePPID, which is what counterfeit and third-party packs
+> do: the identity data is blanked or copied from one donor pack, so every
+> pack looks the same. The tool still works with packs like that, but it can
+> only ask you which pack is which, never recognise one. It flags any two
+> packs that report one identity. A counterfeit or unbranded pack is also
+> the likeliest thing in a laptop to swell or catch fire, which matters more
+> than wear tracking.
 
-Both packs report an identical serial, ePPID and manufacture date, so the
-tool cannot read which physical pack is in which slot — it has to ask.
+**Label each pack physically** — a sticker with the name you register it
+under (`Alpha`, `Bravo`, or whatever you pick) — the moment you name it.
+Even with genuine packs the first naming is yours, and a pack that reports
+no identity is only ever what you say it is: a wrong `pack same` or `pack
+assign` for one of those silently corrupts that pack's wear history.
+
+### How a pack is recognised
+
+A genuine Dell pack reports an ePPID (Dell's per-unit part and sequence
+number, read through `dell-wmi-ddv` at `/sys/class/power_supply/BAT*/eppid`)
+and a serial number. The tool combines the two into a *fingerprint*:
+
+- The first time you name a pack, the tool learns its fingerprint from the
+  slot it is in. `pack list` then shows `id read`.
+- When a pack is inserted, or a swap is detected, and its fingerprint
+  matches exactly one known pack, the tool labels it as that pack without
+  asking. A pack it has never seen is asked about as before; once you name
+  it, it is learned too.
+- A reading must agree over **two consecutive samples** (about four minutes
+  on the timer) before it counts. A single sample is not trusted, because
+  BAT1's sysfs has been measured returning BAT0's values for one sample.
+  Until the second sample the question stays open, and any wear in that
+  window goes to whichever pack the slot was labelled with.
+- A fingerprint that contradicts the pack the slot is labelled with means a
+  swap the charge readings could not show (the new pack picked up exactly
+  where the old one left off). A new tenure opens and is labelled from the
+  fingerprint.
+- **Two packs reporting the same identity** are never trusted. If both
+  slots read the same fingerprint for two samples in a row, both packs are
+  marked `id unreadable`, a warning event names the counterfeit and
+  third-party pattern, and from then on those packs are asked about, never
+  recognised.
+- Labelling a pack by hand (`assign`, `reassign`, `swap`) against what the
+  slot reports is allowed; you win, and that pack's fingerprint is forgotten
+  and relearned under the new label.
+- `pack identity <name> show` prints the stored fingerprint, `forget` drops
+  it for relearning, and `unreadable` stops the tool reading that pack's
+  identity at all. Use `unreadable` for a pack you know to be a clone before
+  its twin has ever sat beside it: the tool can only spot two clones when
+  they are in the machine at the same time, so if they only ever take turns
+  in one slot, the second would be recognised as the first.
+
+The ePPID and serial are kept in `state.json` (root-only) and never written
+to the sample log, the Prometheus export or `status --json`.
+
+### Tenures and pending questions
+
 Wear is tracked per *tenure* (one continuous occupancy of a slot) and rolled
 up per named *pack* across every tenure it has ever held, so EFC and calendar
 score for pack "A" survive it moving between BAT0 and BAT1, or sitting on the
@@ -179,7 +230,8 @@ A tenure opens whenever a slot goes from empty to occupied, or its readings
 jump by more than the plausible-continuity threshold (a `charge_full` change,
 or a `charge_now` discontinuity too large for the elapsed time) — either one
 means "this might not be the same physical pack any more," and the tool asks
-rather than assumes. `status`/`report` show a `PENDING <slot>` line, and the
+rather than assumes (unless the pack's fingerprint answers the question, as
+above). `status`/`report` show a `PENDING <slot>` line, and the
 applet surfaces the same question in its popup, with one of three answers:
 
 - `pack same <slot>` — confirm it is the pack that was previously in that
@@ -334,6 +386,7 @@ does not recognize even though it is valid, equivalent TOML.
 | `pack rename <old> <new>` | rename a pack |
 | `pack retire <name>` | mark a pack retired (must not be in a slot) |
 | `pack unretire <name>` | un-retire a pack |
+| `pack identity <name> <show \| forget \| unreadable>` | show a pack's learned fingerprint, forget it so it is relearned, or never read that pack's identity (for a known clone) |
 | `reset --slot <SLOT> \| --pack <NAME> \| --all` | clear counters for one slot, delete a bench pack and its tenures, or reset everything |
 
 ## Privilege model
@@ -617,8 +670,7 @@ is a warning on the tick's stderr, never a failed tick.
 Usage profiles (daily / field / travel / storage / custom), the system-wide
 `config.toml`, safe auto-revert out of field mode, the scoped service
 account, and the pack registry that tracks wear per physical pack across
-swaps and rotations (with confirm-on-swap identity, since these packs expose
-no per-unit identity) are all implemented, per
+swaps and rotations (with confirm-on-swap identity) are all implemented, per
 [docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md](docs/superpowers/specs/2026-09-12-profiles-packs-config-design.md).
 The applet's config dialog and notifications landed in 0.3, completing the
 spec. 0.3.1 closed the follow-ups (`pack swap`, the two-sample removal
@@ -628,23 +680,33 @@ timed top-off through an RTC wake, quick actions), and the revert changes
 every reverting profile gets (the still-going-out guard, the hour-out
 warning with `profile extend`, `--until`), per
 [docs/superpowers/specs/2026-09-14-conference-overnight-design.md](docs/superpowers/specs/2026-09-14-conference-overnight-design.md).
-Nothing is queued; new work starts from an issue.
+0.5.0 reads pack identity: genuine Dell packs report distinct ePPIDs and
+serials, and a named pack is recognised from then on (see How a pack is
+recognised). Nothing is queued; new work starts from an issue.
 
 ## Known limits
 
-- **Pack identity is confirmed, not read.** Both packs report an identical
-  serial (`88`) and ePPID, so a swap is detected heuristically (a
+- **Pack identity is read only from packs that have one.** Genuine Dell
+  packs report a distinct ePPID and serial, and once named are recognised
+  on their own. Counterfeit and third-party packs typically report a blank
+  or shared identity (the tool's first two packs both read serial `88` with
+  one ePPID), so for those a swap is detected heuristically (a
   `charge_full` change or an implausible `charge_now` jump) and the tool
-  asks which physical pack it is seeing rather than assuming — see Packs
-  and swapping above. A swap that happens to look continuous (same design
+  asks. A swap of such packs that happens to look continuous (same design
   capacity, charge picked back up close to where it left off) can still be
   missed; `pack reassign` fixes a tenure that was mislabeled this way.
+- **Clones that never meet cannot be told apart.** Two packs sharing one
+  identity are caught only when both sit in the machine together for two
+  samples. Mark a known clone with `pack identity <name> unreadable`.
+- **Identity needs `dell-wmi-ddv`.** Without that module there is no
+  `eppid` file, and every pack is asked about.
 - **A swap across a shutdown or long suspend can be undetectable.** The
   discontinuity check's charge allowance scales up with the elapsed gap, so
   a swap that happens during a shutdown or suspend longer than about 20
   minutes can look perfectly plausible either way — confirm identity
   yourself (`pack same`/`assign`) after any such gap rather than trusting
-  the guess.
+  the guess. Packs with a readable identity are not affected: the
+  fingerprint settles it.
 - **Repairing a pair that got swapped while both were out:** if BAT0 and
   BAT1 both end up mislabeled after being pulled together and reinserted
   swapped, `pack swap` exchanges the two labels in one step (it also answers
@@ -711,8 +773,8 @@ Nothing is queued; new work starts from an issue.
 python3 -m unittest discover -s tests -v
 ```
 
-325 tests across twelve files (`test_wear_model.py`, `test_policy.py`,
-`test_config.py`, `test_apply.py`, `test_registry.py`, `test_cli.py`,
+350 tests across thirteen files (`test_wear_model.py`, `test_policy.py`,
+`test_config.py`, `test_apply.py`, `test_registry.py`, `test_identity.py`, `test_cli.py`,
 `test_state.py`, `test_cli_surface.py`, `test_applet_package.py`,
 `test_metrics.py`, `test_overnight.py`, `test_wake_helper.py`), all against
 a fake `/sys` tree and temp state/config dirs (`DBB_SYSFS_ROOT`,
@@ -724,7 +786,11 @@ holds near-equal packs neutral, and bands clamp to the firmware's limits;
 the policy engine's role/band/pin/revert resolution; config schema
 validation and `set_dotted` coercion; firmware apply/read-back and mismatch
 recording; the pack registry's tenure lifecycle, swap detection (including
-both packs pulled and reinserted swapped) and identity guessing,
+both packs pulled and reinserted swapped) and identity guessing; pack
+identity read from the ePPID and serial (two-sample confirmation, the
+one-sample BAT1 mirror, recognition after a swap, a swap only the
+fingerprint can see, clones marked unreadable, hand labels winning, and the
+fingerprint never reaching the sample log, `status --json` or Prometheus),
 totals/rotation-hint math with bench calendar-aging carried across a
 reinsertion, and version-1-to-2 state migration; the full CLI surface,
 including profile switching, `--for`/`--until` one-off reverts, config
