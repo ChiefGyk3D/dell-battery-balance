@@ -149,6 +149,37 @@ class LearnAndIdentify(unittest.TestCase):
         self.assertEqual(self.fp("Bravo"), f"{EPPID_Z}/103")
         self.assertEqual(registry.open_tenure(self.s, "BAT1")["pack"], "Bravo")
 
+    def test_identity_change_is_never_guessed_same(self):
+        # Measured 2026-09-26: Charlie went in at 27% where Bravo left at 28%;
+        # the charge-based guess said "same" while the fingerprint said no.
+        near = dict(eppid=EPPID_Z, serial="103", charge=2250000, capacity=48)
+        tick(self.s, 240, BAT0=bat(), BAT1=bat(**near))
+        tick(self.s, 360, BAT0=bat(), BAT1=bat(**near))
+        self.assertEqual(self.s["pending"]["BAT1"]["reason"], "identity")
+        self.assertEqual(self.s["pending"]["BAT1"]["guess"], "different")
+
+    def test_unconfirmed_contradicting_reading_is_not_credited_to_the_old_pack(self):
+        # The tick that first sees a different pack must neither accrue wear
+        # into the labelled pack's tenure nor overwrite where it left off.
+        before = registry.open_tenure(self.s, "BAT1")
+        discharged = before["discharge_uah"]
+        near = dict(eppid=EPPID_Z, serial="103", charge=2250000, capacity=48)
+        tick(self.s, 240, BAT0=bat(), BAT1=bat(**near))
+        tick(self.s, 360, BAT0=bat(), BAT1=bat(**near))
+        self.assertEqual(before["discharge_uah"], discharged)
+        self.assertEqual(before["last_capacity"], 50)
+        self.assertEqual(self.s["packs"]["Bravo"]["removed_at_soc"], 50)
+
+    def test_a_one_sample_foreign_reading_costs_nothing(self):
+        # A single odd reading that goes away again: no tenure, no wear lost
+        # beyond the skipped interval, and the pack keeps its label.
+        tick(self.s, 240, BAT0=bat(), BAT1=bat(eppid=EPPID_Z, serial="103"))
+        tick(self.s, 360, BAT0=bat(), BAT1=bat(eppid=EPPID_Y, serial="102", charge=2200000))
+        t = registry.open_tenure(self.s, "BAT1")
+        self.assertEqual(t["pack"], "Bravo")
+        self.assertEqual(self.s["pending"], {})
+        self.assertEqual(t["last_charge_uah"], 2200000)
+
 
 class Clones(unittest.TestCase):
     """Packs that report one shared identity: the signature of counterfeit or
