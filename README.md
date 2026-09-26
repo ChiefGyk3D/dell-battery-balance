@@ -1,7 +1,52 @@
 # dell-battery-balance
 
 Wear tracking and charge-ceiling balancing for the two battery packs in a
-Dell Latitude Rugged (primary + slice).
+Dell Latitude 5430 Rugged (primary + slice).
+
+> [!IMPORTANT]
+> **Built for and tested on one machine: the Dell Latitude 5430 Rugged.**
+> Other Latitude Rugged models with a primary and a slice battery may work,
+> but none has been tested. Feedback from
+> other models is welcome; see Supported hardware below for what to check
+> and what to send.
+
+## Supported hardware
+
+| | Tested |
+|---|---|
+| Model | Dell Latitude 5430 Rugged, primary + slice battery |
+| BIOS | 1.45.0 |
+| OS / kernel | Parrot Security 7.3, Linux 7.1 (`dell-wmi-sysman`, `dell-wmi-ddv` from the stock kernel) |
+| Packs | Dell DRPTT67 (genuine), plus two clone-signature packs (see Packs and swapping) |
+
+**Unconfirmed on anything else.** The tool depends on platform features,
+not on the model name, so another model works if it has all of these:
+
+- Two battery devices, `BAT0` (primary) and `BAT1` (slice), under
+  `/sys/class/power_supply/`.
+- `dell-wmi-sysman` charge attributes for both packs: `PrimaryBattChargeCfg`,
+  `CustomChargeStart`, `CustomChargeStop`, `SliceBattChargeCfg`,
+  `SliceBattCustomChargeStart`, `SliceBattCustomChargeStop`. Without the
+  slice ones the tool can only watch BAT1, not set its ceiling.
+- For recognising packs by their own identity: `dell-wmi-ddv`, which adds
+  an `eppid` file to each battery. Without it every pack is asked about,
+  as on 0.4.
+
+To check a machine and report back, run these (none needs root, and none
+prints a pack's serial or ePPID):
+
+```sh
+cat /sys/class/dmi/id/product_name /sys/class/dmi/id/bios_version
+ls /sys/class/power_supply/ | grep BAT
+ls /sys/class/firmware-attributes/dell-wmi-sysman/attributes/ | grep -i batt
+ls /sys/class/power_supply/BAT*/eppid
+```
+
+Then [open an issue](https://github.com/ChiefGyk3D/dell-battery-balance/issues)
+with the output, your distribution and kernel, and whether it worked. Please
+don't paste the contents of `eppid` or `serial_number`: they identify your
+packs, and the file names are enough. A report that it *didn't* work is
+as useful as one that did.
 
 ## The problem
 
