@@ -20,9 +20,10 @@ same pack from taking every cycle.
 
 ## Why this tool has to measure rather than read
 
-On this platform **neither pack reports `cycle_count`** — it reads 0 on both,
-and `dell_wmi_ddv` does not extend it. There is no wear counter to query. The
-tool therefore derives wear itself, by integrating charge flow over time:
+The tool was built on two packs that reported **`cycle_count` 0 after
+months of use**, the same serial and the same ePPID: the clone pattern (see
+Packs and swapping). With no working counter to query, the tool derives wear
+itself, by integrating charge flow over time:
 
 - **EFC (equivalent full cycles)** = cumulative charge out ÷ design capacity.
   This is the cycle-wear number. Integrated from `charge_now` deltas in µAh,
@@ -31,6 +32,12 @@ tool therefore derives wear itself, by integrating charge flow over time:
   A heuristic (SoC term rising to 4× at 100%, Arrhenius doubling per 10 °C),
   used *only* to compare the two packs against each other. Both packs are
   measured identically, so the absolute scale does not matter.
+
+Genuine Dell packs may keep a real counter. Whether they do is an open
+measurement, not an assumption: from 0.6.0 the tool records each pack's
+`cycle_count` and every change to it, with its own EFC alongside (see
+Firmware cycle count below). EFC stays the number the balancer uses until
+that comparison says otherwise.
 
 ## The lever
 
@@ -239,6 +246,32 @@ they can the ePPID and serial in `/sys` itself. It is never written to the
 sample log, the Prometheus export or `status --json`, which are the outputs
 that tend to get pasted or scraped.
 
+### Firmware cycle count
+
+Each named pack's `cycle_count` is recorded the first time it is read, and
+every later change is logged as a `cycles` event that puts the tool's own
+count beside it:
+
+```
+Alpha: firmware cycle count 0 -> 1 (the tool counts 0.93 EFC since it first read 0)
+```
+
+`pack list` shows it as `fw`, `report` as `fw cyc`, the applet's Packs page
+as "firmware: N cycles", and Prometheus as `dbb_pack_firmware_cycle_count`
+next to `dbb_pack_efc_since_firmware_first`. A `-` or "unknown" means no
+reading has been confirmed yet.
+
+A reading counts only when two consecutive samples agree, the slot has no
+open identity question, and, for a pack with a fingerprint, the slot's
+confirmed identity is that pack's. Nothing is recorded from a sample where
+both slots report one identity. Together these stop BAT1's one-sample
+mirror of BAT0 from moving the wrong pack's counter. A count that goes
+**down** is a `warning` event: a genuine counter only climbs, so a drop
+means it was reset or the pack is not what it reports.
+
+The count is kept per pack in `state.json` and is not added to the CSV
+sample log, whose columns stay fixed within a year's file.
+
 ### Tenures and pending questions
 
 Wear is tracked per *tenure* (one continuous occupancy of a slot) and rolled
@@ -416,7 +449,7 @@ does not recognize even though it is valid, equivalent TOML.
 | `topoff now` | conference profile: lift the overnight hold now, charge both packs to 100% and stay there until unplugged — for going back out to the CTF |
 | `night` | conference profile: in for the night — start the hold now instead of waiting for `night_from` |
 | `leave-at <HH:MM \| none> [--tomorrow]` | conference profile: one-off departure time for the next top-off (the next occurrence of HH:MM; `--tomorrow` forces tomorrow's); `none` goes back to the profile's `leave_at` |
-| `pack list` | list known packs (EFC, calendar score, slot/bench/retired) and any pending identity questions |
+| `pack list` | list known packs (EFC, calendar score, firmware cycle count, identity, slot/bench/retired) and any pending identity questions |
 | `pack assign <slot> <name>` | identify the pack in `<slot>` as an existing named pack |
 | `pack new <slot> <name>` | register the pack in `<slot>` as a brand-new named pack |
 | `pack same <slot>` | confirm the pack in `<slot>` is the one that was previously there |
@@ -506,7 +539,7 @@ dell-battery-balance status
     # after an upgrade: EFC/calendar-score numbers match what they were
     # pre-upgrade -- state.json was preserved, not reset
 dell-battery-balance --version
-    # 0.5.0
+    # 0.6.0
 dell-battery-balance pack list
     # no prompt: read-only. Genuine Dell packs show "id read" a few minutes
     # after install; a pack with no identity shows "id asked"
@@ -698,6 +731,7 @@ needs no group membership. Series, all prefixed `dbb_`:
 | Family | Labels | What |
 |---|---|---|
 | `dbb_pack_efc`, `dbb_pack_calendar_score` | `pack` | the two wear numbers per named pack, across every tenure (the calendar score includes the bench estimate) — the long-run curves worth charting |
+| `dbb_pack_firmware_cycle_count`, `dbb_pack_efc_since_firmware_first` | `pack` | the pack's own counter, as last confirmed, and the tool's EFC since that counter was first read: chart the two together to see whether they track |
 | `dbb_pack_in_slot` / `dbb_pack_bench_hours`, `dbb_pack_bench_soc_percent`, `dbb_pack_retired`, `dbb_pack_tenures` | `pack` (+ `slot`) | where each pack is |
 | `dbb_divergence_efc`, `dbb_divergence_calendar_score` | | what the balancer compares against `deadband_efc`; absent unless both slots are occupied |
 | `dbb_slot_present`, `dbb_slot_capacity_percent`, `dbb_slot_power_watts`, `dbb_slot_voltage_volts`, `dbb_slot_temperature_celsius`, `dbb_slot_health_percent`, `dbb_slot_status`, `dbb_slot_pack_info` | `slot` (+ `status` / `pack`) | live readings per slot; only `present` is emitted for an empty slot |
@@ -729,7 +763,9 @@ warning with `profile extend`, `--until`), per
 [docs/superpowers/specs/2026-09-14-conference-overnight-design.md](docs/superpowers/specs/2026-09-14-conference-overnight-design.md).
 0.5.0 reads pack identity: genuine Dell packs report distinct ePPIDs and
 serials, and a named pack is recognised from then on (see How a pack is
-recognised). Nothing is queued; new work starts from an issue.
+recognised). 0.6.0 records each pack's firmware `cycle_count` against the
+tool's EFC, to find out whether genuine packs keep a working counter.
+Nothing is queued; new work starts from an issue.
 
 ## Known limits
 
@@ -820,8 +856,8 @@ recognised). Nothing is queued; new work starts from an issue.
 python3 -m unittest discover -s tests -v
 ```
 
-360 tests across thirteen files (`test_wear_model.py`, `test_policy.py`,
-`test_config.py`, `test_apply.py`, `test_registry.py`, `test_identity.py`, `test_cli.py`,
+371 tests across fourteen files (`test_wear_model.py`, `test_policy.py`,
+`test_config.py`, `test_apply.py`, `test_registry.py`, `test_identity.py`, `test_cycles.py`, `test_cli.py`,
 `test_state.py`, `test_cli_surface.py`, `test_applet_package.py`,
 `test_metrics.py`, `test_overnight.py`, `test_wake_helper.py`), all against
 a fake `/sys` tree and temp state/config dirs (`DBB_SYSFS_ROOT`,
@@ -838,6 +874,8 @@ identity read from the ePPID and serial (two-sample confirmation, the
 one-sample BAT1 mirror, recognition after a swap, a swap only the
 fingerprint can see, clones marked unreadable, hand labels winning, and the
 fingerprint never reaching the sample log, `status --json` or Prometheus),
+the firmware cycle counter (two-sample agreement, identity and mirror
+guards, the decrease warning, following the pack across slots),
 totals/rotation-hint math with bench calendar-aging carried across a
 reinsertion, and version-1-to-2 state migration; the full CLI surface,
 including profile switching, `--for`/`--until` one-off reverts, config

@@ -138,6 +138,10 @@ def render_prometheus(j):
               p.get("calendar_score"), L)
         o.add("dbb_pack_retired", "1 when the pack is retired.", 1 if p.get("retired") else 0, L)
         o.add("dbb_pack_tenures", "Tenures recorded for this pack.", p.get("tenures"), L)
+        o.add("dbb_pack_firmware_cycle_count", "The pack's own cycle_count, as last confirmed.",
+              p.get("firmware_cycles"), L)
+        o.add("dbb_pack_efc_since_firmware_first", "Tool EFC accrued since the firmware count was first read.",
+              p.get("efc_since_firmware_first"), L)
         if p.get("in_slot"):
             o.add("dbb_pack_in_slot", "1 for the slot this pack is currently in.", 1,
                   {"pack": p["name"], "slot": p["in_slot"]})

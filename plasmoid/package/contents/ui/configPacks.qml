@@ -149,11 +149,13 @@ KCM.SimpleKCM {
                     Layout.fillWidth: true
                     elide: Text.ElideRight
                     opacity: 0.8
-                    text: i18n("%1 EFC, calendar %2, %3, %4",
+                    text: i18n("%1 EFC (firmware: %5 cycles), calendar %2, %3, %4",
                                Number(row.modelData.efc).toFixed(2),
                                Number(row.modelData.calendar_score).toFixed(1),
                                page.where(row.modelData),
-                               page.identity(row.modelData))
+                               page.identity(row.modelData),
+                               row.modelData.firmware_cycles === null || row.modelData.firmware_cycles === undefined
+                                   ? i18n("unknown") : row.modelData.firmware_cycles)
                 }
                 QQC2.TextField {
                     id: rename

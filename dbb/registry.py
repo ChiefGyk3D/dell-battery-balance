@@ -452,6 +452,49 @@ def resolve_identities(state, ids, bench_temp_c=25.0):
         add_event(state, "pack", f"{t['pack']}: identity learned from the pack in {b}")
 
 
+def track_cycles(state, s, last):
+    """Record each labelled pack's firmware cycle_count and every change to
+    it, with the tool's EFC alongside for comparison. A reading counts only
+    when two consecutive samples agree, the slot has no open question, and --
+    for a pack with a fingerprint -- the slot's confirmed identity is that
+    pack's, so a mirrored BAT1 sample cannot move the wrong pack. Nothing is
+    recorded from a sample where both slots report one identity."""
+    if _ident(state).get("twin_samples", 0):
+        return
+    for b in BATS:
+        v, t = s["bats"].get(b), open_tenure(state, b)
+        if not v or t is None or not t["pack"] or state.get("pending", {}).get(b):
+            continue
+        n = v.get("cycle_count")
+        prev = ((last or {}).get("bats") or {}).get(b) or {}
+        if n is None or prev.get("cycle_count") != n:
+            continue
+        p = state["packs"][t["pack"]]
+        if p.get("fingerprint") and slot_identity(state, b) != p["fingerprint"]:
+            continue
+        e = _pack_efc(state, t["pack"])
+        fw = p.get("fw_cycles")
+        if fw is None:
+            p["fw_cycles"] = {"value": n, "first_value": n, "first_ts": now_iso(),
+                              "changed_ts": None, "efc_at_first": e}
+            continue
+        if n == fw["value"]:
+            continue
+        old, fw["value"], fw["changed_ts"] = fw["value"], n, now_iso()
+        if n < old:
+            add_event(state, "warning", f"{t['pack']}: firmware cycle count went down, {old} -> {n}; "
+                      "a genuine pack's counter only climbs, so it was reset or the pack is not what it reports")
+        else:
+            add_event(state, "cycles", f"{t['pack']}: firmware cycle count {old} -> {n} "
+                      f"(the tool counts {e - fw['efc_at_first']:.2f} EFC since it first read {fw['first_value']})")
+
+
+def _pack_efc(state, name):
+    tenures = [t for t in state["tenures"] if t["pack"] == name]
+    design = next((t["design_uah"] for t in tenures if t.get("design_uah")), None)
+    return sum(t["discharge_uah"] for t in tenures) / design if design else 0.0
+
+
 def set_identity(state, name, action):
     """'forget': drop the fingerprint (and any unreadable mark) and relearn.
     'unreadable': never read this pack's identity; always ask."""
@@ -527,6 +570,10 @@ def pack_totals(state, name, now, bench_temp_c):
         "retired": p["retired"],
         "removed_at_soc": p.get("removed_at_soc"),
         "identity": identity_state(p),
+        "firmware_cycles": (p.get("fw_cycles") or {}).get("value"),
+        "efc_since_firmware_first": (round((discharge / design if design else 0.0)
+                                           - p["fw_cycles"]["efc_at_first"], 3)
+                                     if p.get("fw_cycles") else None),
     }
 
 
