@@ -216,8 +216,21 @@ and a serial number. The tool combines the two into a *fingerprint*:
   they are in the machine at the same time, so if they only ever take turns
   in one slot, the second would be recognised as the first.
 
-The ePPID and serial are kept in `state.json` (root-only) and never written
-to the sample log, the Prometheus export or `status --json`.
+**Setting it up** after installing 0.5.0, with the packs already named:
+
+```sh
+dell-battery-balance pack list        # a few minutes on: genuine packs show "id read"
+dell-battery-balance pack identity A B unreadable   # only for packs you know are clones
+```
+
+Packs that report no identity show `id asked`; nothing to do. A new pack is
+named once, when the tool asks (`dell-battery-balance pack new BAT1
+Charlie`, or from the applet), and is recognised from then on.
+
+The fingerprint is kept in `state.json`, which local users can read, as
+they can the ePPID and serial in `/sys` itself. It is never written to the
+sample log, the Prometheus export or `status --json`, which are the outputs
+that tend to get pasted or scraped.
 
 ### Tenures and pending questions
 
@@ -318,9 +331,20 @@ dell-battery-balance profile list
 dell-battery-balance profile show daily
 ```
 
-Commands that switch profiles, apply ceilings, or edit configuration run as
-the `dell-battery-balance` service account, through one of two polkit-gated
-wrappers:
+Commands that change anything (switch profiles, apply ceilings, name or
+mark packs, edit configuration) are typed the same way. Run as your own
+user, the tool re-runs itself as the `dell-battery-balance` service account
+through the right polkit-gated wrapper, and polkit asks for your password:
+
+```sh
+dell-battery-balance field                           # your password
+dell-battery-balance pack new BAT1 Charlie           # your password
+dell-battery-balance pack identity A B unreadable    # admin password
+```
+
+It prints the exact `pkexec` command before running it. Under the hood that
+is one of two wrappers, which the applet calls directly and which still
+work typed out in full:
 
 ```sh
 pkexec --user dell-battery-balance /usr/local/libexec/dbb-control profile set travel
@@ -331,8 +355,15 @@ pkexec --user dell-battery-balance /usr/local/libexec/dbb-configure config set g
 pkexec --user dell-battery-balance /usr/local/libexec/dbb-configure profile create trip --from travel
 ```
 
+The re-run happens only for a user who is neither root nor the service
+account, never for a read-only command (`status`, `report`, `profile
+list/show`, `config get/validate`, `pack list`, `pack identity … show`,
+`balance` without `--apply`), and never when `DBB_STATE_DIR`,
+`DBB_CONFIG_DIR` or `DBB_SYSFS_ROOT` points the tool at a private tree. If
+`pkexec` or the wrapper is missing it exits 3 and prints the `sudo` form.
+
 `dbb-control` refuses configure-class subcommands — `config set/apply/validate`,
-`profile create/edit/delete`, `reset`, `pack reassign/rename/retire/unretire`
+`profile create/edit/delete`, `reset`, `pack reassign/swap/rename/retire/unretire/identity`
 — with exit 3; `config get`, `pack list/assign/new/same`, and everything else
 above stay control-class. See Privilege model below.
 
@@ -386,7 +417,7 @@ does not recognize even though it is valid, equivalent TOML.
 | `pack rename <old> <new>` | rename a pack |
 | `pack retire <name>` | mark a pack retired (must not be in a slot) |
 | `pack unretire <name>` | un-retire a pack |
-| `pack identity <name> <show \| forget \| unreadable>` | show a pack's learned fingerprint, forget it so it is relearned, or never read that pack's identity (for a known clone) |
+| `pack identity <name>... <show \| forget \| unreadable>` | show one or more packs' learned fingerprints, forget them so they are relearned, or never read those packs' identity (for known clones) |
 | `reset --slot <SLOT> \| --pack <NAME> \| --all` | clear counters for one slot, delete a bench pack and its tenures, or reset everything |
 
 ## Privilege model
@@ -428,7 +459,7 @@ Two polkit actions gate the two wrappers used above:
 | Action | Wrapper | Used for | Default prompt |
 |---|---|---|---|
 | `com.chiefgyk3d.dellbatterybalance.control` | `dbb-control` | `config get`, `profile set`, `field`, `restore`, `balance --apply`, `pack list/assign/new/same` | the user's own password, kept (`auth_self_keep`) |
-| `com.chiefgyk3d.dellbatterybalance.configure` | `dbb-configure` | `config set/apply/validate`, `profile create/edit/delete`, `reset`, `pack reassign/swap/rename/retire/unretire` | admin password, kept (`auth_admin_keep`) |
+| `com.chiefgyk3d.dellbatterybalance.configure` | `dbb-configure` | `config set/apply/validate`, `profile create/edit/delete`, `reset`, `pack reassign/swap/rename/retire/unretire/identity` | admin password, kept (`auth_admin_keep`) |
 
 `control` deliberately still prompts: a profile switch can park both packs
 at 100% for days, the exact harm this tool exists to prevent. To loosen it
@@ -773,7 +804,7 @@ recognised). Nothing is queued; new work starts from an issue.
 python3 -m unittest discover -s tests -v
 ```
 
-350 tests across thirteen files (`test_wear_model.py`, `test_policy.py`,
+357 tests across thirteen files (`test_wear_model.py`, `test_policy.py`,
 `test_config.py`, `test_apply.py`, `test_registry.py`, `test_identity.py`, `test_cli.py`,
 `test_state.py`, `test_cli_surface.py`, `test_applet_package.py`,
 `test_metrics.py`, `test_overnight.py`, `test_wake_helper.py`), all against
@@ -796,8 +827,10 @@ reinsertion, and version-1-to-2 state migration; the full CLI surface,
 including profile switching, `--for`/`--until` one-off reverts, config
 get/set/validate/apply strictness (both TOML and `--json`), the `pack ...`
 subcommands and `reset --pack`, the `report` tenure table, the per-year
-sample-log rotation, and the polkit-class gate (control vs.
-pack-admin/configure); the overnight state machine's four phases and its
+sample-log rotation, the polkit-class gate (control vs.
+pack-admin/configure), and the re-run through `pkexec` (which wrapper each
+class gets, read-only commands, root, the service account and private trees
+never re-run, the `sudo` fallback); the overnight state machine's four phases and its
 manual `topoff`/`night` overrides, the charging-current ring and sequential
 top-off estimate, `leave-at`'s override-then-consumed lifecycle, and the
 wakealarm text written while holding; the wake helper (`libexec/dell-battery-balance-wake`)
