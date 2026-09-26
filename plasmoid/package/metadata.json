@@ -7,7 +7,7 @@
             }
         ],
         "Category": "System Information",
-        "Description": "Per-pack wear tracking and charge-ceiling control for dual-battery Dell Latitude Rugged laptops",
+        "Description": "Per-pack wear tracking and charge-ceiling control for the dual-battery Dell Latitude 5430 Rugged (other Rugged models untested)",
         "Icon": "battery-profile-powersave",
         "Id": "com.chiefgyk3d.dellbatterybalance",
         "License": "GPL-3.0-or-later",
