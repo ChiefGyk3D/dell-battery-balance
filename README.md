@@ -498,7 +498,13 @@ dell-battery-balance status
     # after an upgrade: EFC/calendar-score numbers match what they were
     # pre-upgrade -- state.json was preserved, not reset
 dell-battery-balance --version
-    # 0.3.0
+    # 0.5.0
+dell-battery-balance pack list
+    # no prompt: read-only. Genuine Dell packs show "id read" a few minutes
+    # after install; a pack with no identity shows "id asked"
+dell-battery-balance profile set daily
+    # prints "asking for authorisation: pkexec --user dell-battery-balance
+    # /usr/local/libexec/dbb-control profile set daily" and prompts
 ls /usr/share/knotifications6/dell_battery_balance.notifyrc
 dell-battery-balance config get --json | python3 -m json.tool > /dev/null
 ```
@@ -572,7 +578,9 @@ Right-click the widget → Configure. Four pages:
   for the Conference type — the overnight fields (mode, `night_from`,
   `leave_at`, hold band, margin).
 - **Packs** — rename, retire or un-retire packs, and answer pending identity
-  questions.
+  questions. Each pack's row says whether it is recognised by its own
+  identity, has none, or was marked unreadable (see How a pack is
+  recognised).
 - **General** — balance deadband, automatic balancing, bench temperature.
 
 <p align="center">
