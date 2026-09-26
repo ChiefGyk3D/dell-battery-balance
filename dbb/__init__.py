@@ -11,4 +11,4 @@
 #
 """dell-battery-balance package: wear tracking and charge-ceiling balancing."""
 
-VERSION = "0.5.1"
+VERSION = "0.6.0"

@@ -888,6 +888,22 @@ class PackIdentity(CliBase):
         self.assertEqual({p["name"]: p["identity"] for p in self.status()["packs"]}["Alpha"], "unreadable")
 
 
+class FirmwareCycleOutputs(CliBase):
+    def test_list_report_and_prometheus_show_it(self):
+        for slot in ("BAT0", "BAT1"):
+            self.fs._w(f"class/power_supply/{slot}/cycle_count", 3)
+        self.run_cli("tick")
+        self.run_cli("pack", "new", "BAT0", "A")
+        self.run_cli("tick")
+        _, out, _ = self.run_cli("pack", "list")
+        self.assertRegex(out, r"A .* fw +3 ")
+        _, rep, _ = self.run_cli("report")
+        self.assertRegex(rep, r"\nA +\S+ +3 ")
+        _, prom, _ = self.run_cli("status", "--prometheus")
+        self.assertIn('dbb_pack_firmware_cycle_count{pack="A"} 3', prom)
+        self.assertIn('dbb_pack_efc_since_firmware_first{pack="A"} 0', prom)
+
+
 class Elevation(CliBase):
     """A writing command typed by an ordinary user re-runs itself through the
     right pkexec wrapper, so nobody has to know the wrapper paths."""

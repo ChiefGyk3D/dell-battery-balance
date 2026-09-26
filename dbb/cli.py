@@ -579,7 +579,8 @@ def cmd_pack_list(args):
     for r in rows:
         where = r["in_slot"] or ("retired" if r["retired"] else "bench")
         extra = f"  out {r['bench_hours']:.0f}h at {r['removed_at_soc']}%" if (where == "bench" and r["removed_at_soc"] is not None) else ""
-        print(f"{r['name']:16} EFC {r['efc']:6.2f}  cal {r['calendar_score']:7.1f}  "
+        fw = "-" if r["firmware_cycles"] is None else r["firmware_cycles"]
+        print(f"{r['name']:16} EFC {r['efc']:6.2f}  cal {r['calendar_score']:7.1f}  fw {fw!s:>4}  "
               f"id {r['identity']:10}  {where:8}{extra}")
     hint = registry.rotation_hint(state, cfg["general"]["deadband_efc"], now, cfg["general"]["bench_temp_c"], rows=rows)
     if hint:

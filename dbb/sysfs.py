@@ -90,6 +90,10 @@ def sample_all():
             # dell-wmi-ddv. Kept out of the sample log (CSV_FIELDS).
             "eppid": read_str(d / "eppid"),
             "serial": read_str(d / "serial_number"),
+            # The pack's own counter. Measured 0 on the clone pair after
+            # months of use; whether genuine packs move it is what
+            # registry.track_cycles exists to find out.
+            "cycle_count": read_int(d / "cycle_count"),
         }
     return out
 

@@ -103,6 +103,7 @@ def integrate(state, s, bench_temp_c=25.0):
             # that tenure would overstate its data before anything accrued.
             t["samples"] += 1
     registry.resolve_identities(state, ids, bench_temp_c)
+    registry.track_cycles(state, s, last)
 
     if not last:
         _track_ac_run(state, None, s)
