@@ -86,6 +86,10 @@ def sample_all():
             "voltage_min_design_uv": read_int(d / "voltage_min_design"),
             "current_now_ua": read_int(d / "current_now"),
             "temp_dc": read_int(d / "temp"),
+            # Identity, when the pack has one: the ePPID comes from
+            # dell-wmi-ddv. Kept out of the sample log (CSV_FIELDS).
+            "eppid": read_str(d / "eppid"),
+            "serial": read_str(d / "serial_number"),
         }
     return out
 

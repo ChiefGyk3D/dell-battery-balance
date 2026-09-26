@@ -77,7 +77,7 @@ def _track_ac_run(state, last, s):
         state["ac_run_start_ts"] = s["ts"]
 
 
-def integrate(state, s):
+def integrate(state, s, bench_temp_c=25.0):
     """Fold one sample into the open tenure of each present slot."""
     from dbb import registry   # local import: registry imports wear
     last = state.get("last")
@@ -87,13 +87,14 @@ def integrate(state, s):
         if dt <= 0:
             return {"counted": False, "reason": "clock went backwards"}
 
+    ids = registry.read_identities(state, s)
     changed_slots = set()
     for b in BATS:
         v = s["bats"].get(b)
         if not v or v.get("present", 1) != 1:
             registry.note_absent(state, b, s["ts"])
             continue
-        t, changed = registry.observe(state, b, v, s, dt)
+        t, changed = registry.observe(state, b, v, s, dt, fp=ids.get(b))
         if changed:
             changed_slots.add(b)
         else:
@@ -101,6 +102,7 @@ def integrate(state, s):
             # interval that belongs to nobody; counting it as a sample on
             # that tenure would overstate its data before anything accrued.
             t["samples"] += 1
+    registry.resolve_identities(state, ids, bench_temp_c)
 
     if not last:
         _track_ac_run(state, None, s)

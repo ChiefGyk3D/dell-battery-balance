@@ -1,4 +1,5 @@
 import io, json, os, sys, tempfile, time, unittest
+from pathlib import Path
 from contextlib import redirect_stdout, redirect_stderr
 from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
@@ -822,6 +823,151 @@ class Packs(CliBase):
         self.run_cli("sample")
         with open(os.path.join(d, "state.json")) as fh:
             self.assertEqual(_json.load(fh)["version"], 2)
+
+
+class PackIdentity(CliBase):
+    """End to end through the CLI: genuine packs are recognised by their
+    fingerprint, and the fingerprint never leaves state.json."""
+    EPPIDS = {"BAT0": "CN0XXXXXSLW0000E00AAA01", "BAT1": "CN0XXXXXSLW0000E00ABA01"}
+
+    def ident(self, slot, eppid, serial):
+        self.fs._w(f"class/power_supply/{slot}/eppid", eppid)
+        self.fs._w(f"class/power_supply/{slot}/serial_number", serial)
+
+    def setUp(self):
+        super().setUp()
+        self.ident("BAT0", self.EPPIDS["BAT0"], "101")
+        self.ident("BAT1", self.EPPIDS["BAT1"], "102")
+        self.run_cli("tick")
+        self.run_cli("pack", "new", "BAT0", "Alpha")
+        self.run_cli("pack", "new", "BAT1", "Bravo")
+        self.run_cli("tick")
+
+    def test_learned_and_listed(self):
+        code, out, err = self.run_cli("pack", "list")
+        self.assertEqual(code, 0, err)
+        self.assertRegex(out, r"Alpha .* id read ")
+        code, out, _ = self.run_cli("pack", "identity", "Alpha", "show")
+        self.assertIn(self.EPPIDS["BAT0"] + "/101", out)
+
+    def test_swap_recognised_without_a_question(self):
+        self.fs.bat("BAT0", present=0)
+        self.fs.bat("BAT1", present=0)
+        for _ in range(2):
+            self.run_cli("tick")
+        self.fs.bat("BAT0", capacity=60, charge_now=2760000, status="Discharging")
+        self.fs.bat("BAT1", capacity=100, charge_now=4600000, status="Full")
+        self.ident("BAT0", self.EPPIDS["BAT1"], "102")
+        self.ident("BAT1", self.EPPIDS["BAT0"], "101")
+        self.run_cli("tick")
+        self.assertEqual(sorted(self.status()["pending"]), ["BAT0", "BAT1"])
+        self.run_cli("tick")
+        j = self.status()
+        self.assertEqual(j["pending"], {})
+        self.assertEqual((j["bats"]["BAT0"]["pack"], j["bats"]["BAT1"]["pack"]), ("Bravo", "Alpha"))
+
+    def test_fingerprint_stays_in_state(self):
+        _, out, _ = self.run_cli("status", "--json")
+        _, prom, _ = self.run_cli("status", "--prometheus")
+        _, text, _ = self.run_cli("status")
+        d = os.environ["DBB_STATE_DIR"]
+        logs = "".join(Path(d, n).read_text() for n in os.listdir(d) if n.endswith(".csv"))
+        self.assertTrue(logs)
+        for where, blob in (("json", out), ("prometheus", prom), ("status", text), ("sample log", logs),
+                            ("metrics.prom", Path(d, "metrics.prom").read_text())):
+            for e in self.EPPIDS.values():
+                self.assertNotIn(e, blob, where)
+        self.assertEqual({p["name"]: p["identity"] for p in json.loads(out)["packs"]},
+                         {"Alpha": "read", "Bravo": "read"})
+
+    def test_unreadable_needs_pack_admin(self):
+        code, _, _ = self.run_cli("--polkit-class", "control", "--", "pack", "identity", "Alpha", "unreadable")
+        self.assertNotEqual(code, 0)
+        code, _, err = self.run_cli("pack", "identity", "Alpha", "unreadable")
+        self.assertEqual(code, 0, err)
+        self.assertEqual({p["name"]: p["identity"] for p in self.status()["packs"]}["Alpha"], "unreadable")
+
+
+class Elevation(CliBase):
+    """A writing command typed by an ordinary user re-runs itself through the
+    right pkexec wrapper, so nobody has to know the wrapper paths."""
+
+    class Execd(Exception):
+        pass
+
+    def elevate(self, *argv, user="alice", euid=1000):
+        from unittest import mock
+        seen = {}
+
+        def fake_exec(prog, cmd):
+            seen["cmd"] = cmd
+            raise self.Execd()
+        env = {k: v for k, v in os.environ.items() if k not in self.cli.PRIVATE_TREE_ENV}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(self.cli.os, "geteuid", return_value=euid), \
+                mock.patch.object(self.cli.pwd, "getpwuid", return_value=mock.Mock(pw_name=user)), \
+                mock.patch.object(self.cli.shutil, "which", return_value="/usr/bin/pkexec"), \
+                mock.patch.object(self.cli.os, "access", return_value=True), \
+                mock.patch.object(self.cli.os, "execvp", side_effect=fake_exec), \
+                redirect_stderr(io.StringIO()):
+            args = self.cli.build_parser().parse_args(self.cli.expand_profile_shortcut(list(argv)))
+            if not self.cli._needs_elevation(args):
+                return None
+            with self.assertRaises(self.Execd):
+                self.cli._elevate(args, list(argv))
+        return seen["cmd"]
+
+    def test_configure_class_goes_through_dbb_configure(self):
+        self.assertEqual(self.elevate("pack", "identity", "A", "B", "unreadable"),
+                         ["pkexec", "--user", "dell-battery-balance",
+                          "/usr/local/libexec/dbb-configure", "pack", "identity", "A", "B", "unreadable"])
+
+    def test_control_class_goes_through_dbb_control(self):
+        self.assertEqual(self.elevate("profile", "set", "travel")[3], "/usr/local/libexec/dbb-control")
+        self.assertEqual(self.elevate("pack", "new", "BAT1", "Charlie")[3], "/usr/local/libexec/dbb-control")
+
+    def test_read_only_commands_never_elevate(self):
+        for argv in (["status"], ["report"], ["pack", "list"], ["profile", "list"],
+                     ["config", "get"], ["balance"], ["pack", "identity", "A", "show"]):
+            self.assertIsNone(self.elevate(*argv), argv)
+        self.assertIsNotNone(self.elevate("balance", "--apply"))
+
+    def test_root_service_account_and_wrappers_never_elevate(self):
+        self.assertIsNone(self.elevate("field", euid=0))
+        self.assertIsNone(self.elevate("field", user="dell-battery-balance"))
+        self.assertIsNone(self.elevate("--polkit-class", "control", "--", "field"))
+
+    def test_private_tree_never_elevates(self):
+        # CliBase points DBB_* at a temp tree: commands run as the caller.
+        code, _, err = self.run_cli("pack", "list")
+        self.assertEqual(code, 0, err)
+        args = self.cli.build_parser().parse_args(["field"])
+        self.assertFalse(self.cli._needs_elevation(args))
+
+    def test_main_elevates_before_running_anything(self):
+        from unittest import mock
+        env = {k: v for k, v in os.environ.items() if k not in self.cli.PRIVATE_TREE_ENV}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(self.cli.os, "geteuid", return_value=1000), \
+                mock.patch.object(self.cli.pwd, "getpwuid", return_value=mock.Mock(pw_name="alice")), \
+                mock.patch.object(self.cli.shutil, "which", return_value="/usr/bin/pkexec"), \
+                mock.patch.object(self.cli.os, "access", return_value=True), \
+                mock.patch.object(self.cli.os, "execvp", side_effect=self.Execd) as ex, \
+                mock.patch.object(self.cli, "cmd_pack_identity") as body, \
+                redirect_stderr(io.StringIO()):
+            with self.assertRaises(self.Execd):
+                self.cli.main(["pack", "identity", "A", "unreadable"])
+        ex.assert_called_once()
+        body.assert_not_called()
+
+    def test_missing_pkexec_names_the_sudo_fallback(self):
+        from unittest import mock
+        args = self.cli.build_parser().parse_args(["field"])
+        with mock.patch.object(self.cli.shutil, "which", return_value=None):
+            with self.assertRaises(SystemExit) as cm, redirect_stderr(io.StringIO()) as e:
+                self.cli._elevate(args, ["field"])
+        self.assertEqual(cm.exception.code, 3)
+        self.assertIn("sudo dell-battery-balance field", e.getvalue())
 
 
 class ProfileTemplate(CliBase):

@@ -12,6 +12,9 @@
 """Command-line surface. Every command reads config, state and a sample the same way."""
 import argparse
 import json
+import os
+import pwd
+import shutil
 import sys
 import time
 from datetime import datetime, timezone
@@ -226,9 +229,9 @@ def cmd_tick(args):
         save_state(state)
         return
     _note_good_sample(state)
-    integrate(state, sample)
-    append_log(sample)
     cfg = load_config_or_snapshot(state)
+    integrate(state, sample, cfg["general"]["bench_temp_c"])
+    append_log(sample)
     keep = cfg["general"].get("sample_log_years", cfg_mod.GENERAL_OPTIONAL["sample_log_years"])
     for name in prune_sample_logs(sample["ts"], keep):
         add_event(state, "log", f"removed {name} (keeping {keep} years of samples)")
@@ -273,7 +276,7 @@ def cmd_sample(args):
         save_state(state)
         die("error: no batteries present")
     _note_good_sample(state)
-    integrate(state, s)
+    integrate(state, s, load_config_or_snapshot(state)["general"]["bench_temp_c"])
     save_state(state)
     if not args.no_log:
         append_log(s)
@@ -576,7 +579,8 @@ def cmd_pack_list(args):
     for r in rows:
         where = r["in_slot"] or ("retired" if r["retired"] else "bench")
         extra = f"  out {r['bench_hours']:.0f}h at {r['removed_at_soc']}%" if (where == "bench" and r["removed_at_soc"] is not None) else ""
-        print(f"{r['name']:16} EFC {r['efc']:6.2f}  cal {r['calendar_score']:7.1f}  {where:8}{extra}")
+        print(f"{r['name']:16} EFC {r['efc']:6.2f}  cal {r['calendar_score']:7.1f}  "
+              f"id {r['identity']:10}  {where:8}{extra}")
     hint = registry.rotation_hint(state, cfg["general"]["deadband_efc"], now, cfg["general"]["bench_temp_c"], rows=rows)
     if hint:
         print(f"swap in next: {hint['swap_in']} for {hint['replace']} ({hint['behind_by_efc']:.2f} EFC behind)")
@@ -615,6 +619,23 @@ def cmd_pack_retire(args):
 
 def cmd_pack_unretire(args):
     _registry_op(registry.unretire_pack, args.name)
+
+
+def cmd_pack_identity(args):
+    if args.action == "show":
+        state = load_state()
+        for name in args.names:
+            p = state["packs"].get(name)
+            if p is None:
+                die(f"error: unknown pack {name}")
+            print(f"{name}: {registry.identity_state(p)}"
+                  + (f"  {p['fingerprint']}" if p.get("fingerprint") else ""))
+        return
+
+    def each(state, names, action):
+        for name in names:
+            registry.set_identity(state, name, action)
+    _registry_op(each, args.names, args.action)
 
 
 def cmd_reset(args):
@@ -722,6 +743,9 @@ def build_parser():
     sp.set_defaults(func=cmd_pack_retire, cls="pack-admin")
     sp = pk.add_parser("unretire"); sp.add_argument("name")
     sp.set_defaults(func=cmd_pack_unretire, cls="pack-admin")
+    sp = pk.add_parser("identity", help="show, forget or disable a pack's read identity")
+    sp.add_argument("names", nargs="+", metavar="name"); sp.add_argument("action", choices=("show", "forget", "unreadable"))
+    sp.set_defaults(func=cmd_pack_identity, cls="pack-admin")
 
     sp = sub.add_parser("field", help="alias: profile set field")
     g = sp.add_mutually_exclusive_group()
@@ -742,6 +766,50 @@ def build_parser():
     g.add_argument("--slot", choices=BATS); g.add_argument("--pack", metavar="NAME"); g.add_argument("--all", action="store_true")
     sp.set_defaults(func=cmd_reset, cls="reset")
     return p
+
+
+# ------------------------------------------------------------- elevation
+
+SERVICE_USER = "dell-battery-balance"
+LIBEXEC = "/usr/local/libexec"
+PRIVATE_TREE_ENV = ("DBB_STATE_DIR", "DBB_CONFIG_DIR", "DBB_SYSFS_ROOT")
+
+
+def _read_only(args):
+    if args.func in (cmd_status, cmd_report, cmd_profile_list, cmd_profile_show,
+                     cmd_config_get, cmd_config_validate, cmd_pack_list):
+        return True
+    if args.func is cmd_balance and not args.apply:
+        return True
+    return args.func is cmd_pack_identity and args.action == "show"
+
+
+def _needs_elevation(args):
+    """A command that writes, typed by a user who is neither root nor the
+    service account, and not already inside a wrapper. Pointing DBB_* at a
+    private tree (tests, development) means the caller owns what it writes."""
+    if args.polkit_class is not None or _read_only(args):
+        return False
+    if any(k in os.environ for k in PRIVATE_TREE_ENV) or os.geteuid() == 0:
+        return False
+    try:
+        return pwd.getpwuid(os.geteuid()).pw_name != SERVICE_USER
+    except KeyError:
+        return True
+
+
+def _elevate(args, raw):
+    """Re-run this exact command through the polkit-gated wrapper its class
+    needs; polkit asks for the password. Never returns."""
+    wrapper = os.path.join(LIBEXEC, "dbb-configure" if args.cls in CONFIGURE_CLASS else "dbb-control")
+    cmd = ["pkexec", "--user", SERVICE_USER, wrapper, *raw]
+    if shutil.which("pkexec") is None or not os.access(wrapper, os.X_OK):
+        die("error: this command changes state and must run as the service account, "
+            f"but {'pkexec' if shutil.which('pkexec') is None else wrapper} is missing; "
+            f"run: sudo dell-battery-balance {' '.join(raw)}", 3)
+    print(f"asking for authorisation: {' '.join(cmd)}", file=sys.stderr)
+    sys.stderr.flush()
+    os.execvp("pkexec", cmd)
 
 
 def main(argv=None):
@@ -767,4 +835,6 @@ def main(argv=None):
         print("error: this command needs the configure action (dbb-configure), not control",
               file=sys.stderr)
         sys.exit(3)
+    if _needs_elevation(args):
+        _elevate(args, raw)
     args.func(args)
