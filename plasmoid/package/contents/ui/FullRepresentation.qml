@@ -398,16 +398,21 @@ PlasmaExtras.Representation {
                         text: {
                             const q = pendingMsg.q;
                             if (!q) return "";
-                            const why = q.reason === "insert" ? i18n("A pack was inserted") : i18n("The reading jumped");
+                            const why = q.reason === "insert" ? i18n("A pack was inserted")
+                                      : q.reason === "identity" ? i18n("A different pack reported its identity")
+                                      : i18n("The reading jumped");
                             const prev = q.previous_pack ? i18n(" (was %1)", q.previous_pack) : "";
-                            const g = q.guess === "same" ? i18n("probably the same pack") : i18n("not sure which pack");
+                            const g = q.guess === "same" ? i18n("probably the same pack")
+                                    : q.guess === "different" ? i18n("not the previous pack")
+                                    : i18n("not sure which pack");
                             return i18n("%1 in %2%3 - %4. Which pack is this?", why, row.modelData, prev, g);
                         }
                         actions: [
                             Kirigami.Action {
                                 text: pendingMsg.q && pendingMsg.q.previous_pack ? i18n("Same (%1)", pendingMsg.q.previous_pack) : i18n("Same")
                                 icon.name: "dialog-ok"
-                                visible: !!(pendingMsg.q && pendingMsg.q.previous_pack)
+                                // hidden when the pack's own identity says it is not the previous one
+                                visible: !!(pendingMsg.q && pendingMsg.q.previous_pack && pendingMsg.q.guess !== "different")
                                 enabled: !root.acting
                                 onTriggered: root.act("pack same " + row.modelData, false)
                             }

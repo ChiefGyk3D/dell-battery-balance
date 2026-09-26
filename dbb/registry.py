@@ -131,7 +131,8 @@ def occupancy_change(t, v, dt):
 def guess_identity(prev_t, v, design_uah=None):
     """'same' only when the reading is within 3% of where the previous
     occupant left off and charge_full is unchanged; otherwise 'unsure'. Never
-    'different': a pack charged off-machine looks different and is not."""
+    'different' from charge alone: a pack charged off-machine looks different
+    and is not. Only a changed fingerprint says 'different' (see observe)."""
     if prev_t is None or prev_t.get("last_charge_uah") is None or v.get("charge_now_uah") is None:
         return "unsure"
     if v.get("charge_full_uah") != prev_t.get("last_charge_full_uah"):
@@ -157,14 +158,20 @@ def observe(state, slot, v, s, dt, fp=None):
         reason = "insert"
     else:
         reason = occupancy_change(t, v, dt)
-        if reason is None and fp and t["pack"]:
-            known = state["packs"][t["pack"]].get("fingerprint")
-            if known and known != fp:
+        known = state["packs"][t["pack"]].get("fingerprint") if t["pack"] else None
+        if reason is None and known:
+            if fp and known != fp:
                 reason = "identity"
+            elif fp is None and _unconfirmed_other(state, slot, known):
+                # A different pack may be here but only one sample says so:
+                # this interval belongs to nobody, and the labelled pack's
+                # last reading stays where it left off.
+                return t, True
     if reason:
         prev = close_tenure(state, slot, s["ts"]) if t is not None else last_closed_tenure(state, slot)
         t = new_tenure(state, slot, v, s["ts"])
-        g = guess_identity(prev, v, t["design_uah"])
+        # The charge guess cannot overrule a fingerprint that just changed.
+        g = "different" if reason == "identity" else guess_identity(prev, v, t["design_uah"])
         delta = None
         if (t["design_uah"] and prev and prev.get("last_charge_uah") is not None
                 and v.get("charge_now_uah") is not None):
@@ -367,6 +374,11 @@ def read_identities(state, s):
         ident["slots"][b] = {"fp": fp, "n": n}
         out[b] = fp if n >= CONFIRM_SAMPLES else None
     return out
+
+
+def _unconfirmed_other(state, slot, known):
+    rec = (state.get("identity") or {}).get("slots", {}).get(slot)
+    return bool(rec) and rec["n"] < CONFIRM_SAMPLES and rec["fp"] != known
 
 
 def slot_identity(state, slot):

@@ -195,11 +195,18 @@ and a serial number. The tool combines the two into a *fingerprint*:
 - A reading must agree over **two consecutive samples** (about four minutes
   on the timer) before it counts. A single sample is not trusted, because
   BAT1's sysfs has been measured returning BAT0's values for one sample.
-  Until the second sample the question stays open, and any wear in that
-  window goes to whichever pack the slot was labelled with.
+  If that first reading contradicts the pack the slot is labelled with, the
+  interval is credited to nobody and the labelled pack keeps its last
+  reading, so a pack pulled at 28% is recorded as pulled at 28%, not at
+  whatever its replacement read.
 - A fingerprint that contradicts the pack the slot is labelled with means a
   swap the charge readings could not show (the new pack picked up exactly
-  where the old one left off). A new tenure opens and is labelled from the
+  where the old one left off). Measured on the bench on 2026-09-26: Bravo
+  out at 28%, Charlie in at 27% twelve seconds later, which is inside one
+  tick and inside the charge check's tolerance; the fingerprint caught it
+  on the second tick. The question is asked with the guess `different` and
+  the applet hides its "Same" button, since the pack itself has said it is
+  not the previous one. A new tenure opens and is labelled from the
   fingerprint.
 - **Two packs reporting the same identity** are never trusted. If both
   slots read the same fingerprint for two samples in a row, both packs are
@@ -251,8 +258,9 @@ applet surfaces the same question in its popup, with one of three answers:
   slot. Always available whenever that slot has a previous pack, whatever
   the guess; the guess (`same` when the new reading is within 3% of design
   capacity of where the previous occupant left off, with `charge_full`
-  unchanged, else `unsure`) only labels which answer looks likely — it never
-  restricts which answer you may give.
+  unchanged, else `unsure`; `different` when the pack's fingerprint changed)
+  only labels which answer looks likely — it never restricts which answer
+  you may give.
 - `pack assign <slot> <name>` — identify it as an existing named pack (e.g.
   after a deliberate swap with a pack you already track).
 - `pack new <slot> <name>` — register a pack seen for the first time.
@@ -812,7 +820,7 @@ recognised). Nothing is queued; new work starts from an issue.
 python3 -m unittest discover -s tests -v
 ```
 
-357 tests across thirteen files (`test_wear_model.py`, `test_policy.py`,
+360 tests across thirteen files (`test_wear_model.py`, `test_policy.py`,
 `test_config.py`, `test_apply.py`, `test_registry.py`, `test_identity.py`, `test_cli.py`,
 `test_state.py`, `test_cli_surface.py`, `test_applet_package.py`,
 `test_metrics.py`, `test_overnight.py`, `test_wake_helper.py`), all against

@@ -78,16 +78,21 @@ KCM.SimpleKCM {
                     visible: true
                     type: Kirigami.MessageType.Warning
                     text: {
-                        const why = ask.q.reason === "insert" ? i18n("A pack was inserted") : i18n("The reading jumped");
+                        const why = ask.q.reason === "insert" ? i18n("A pack was inserted")
+                                  : ask.q.reason === "identity" ? i18n("A different pack reported its identity")
+                                  : i18n("The reading jumped");
                         const prev = ask.q.previous_pack ? i18n(" (was %1)", ask.q.previous_pack) : "";
-                        const g = ask.q.guess === "same" ? i18n("probably the same pack") : i18n("not sure which pack");
+                        const g = ask.q.guess === "same" ? i18n("probably the same pack")
+                                : ask.q.guess === "different" ? i18n("not the previous pack")
+                                : i18n("not sure which pack");
                         return i18n("%1 in %2%3 - %4. Which pack is this?", why, ask.modelData, prev, g);
                     }
                 }
                 RowLayout {
                     Layout.fillWidth: true
                     QQC2.Button {
-                        visible: !!ask.q.previous_pack
+                        // hidden when the pack's own identity says it is not the previous one
+                        visible: !!ask.q.previous_pack && ask.q.guess !== "different"
                         text: i18n("Same (%1)", ask.q.previous_pack || "")
                         icon.name: "dialog-ok"
                         enabled: !backend.busy
