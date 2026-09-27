@@ -251,7 +251,8 @@ tick.)
   asking. A pack it has never seen is asked about as before; once you name
   it, it is learned too.
 - A reading must agree over **two consecutive samples** (about four minutes
-  on the timer) before it counts. A single sample is not trusted, because
+  on the timer, or about 15 seconds with `dell-battery-balance check`, or
+  the applet's "Check packs now" button) before it counts. A single sample is not trusted, because
   BAT1's sysfs has been measured returning BAT0's values for one sample.
   If that first reading contradicts the pack the slot is labelled with, the
   interval is credited to nobody and the labelled pack keeps its last
@@ -479,6 +480,7 @@ does not recognize even though it is valid, equivalent TOML.
 | Command | What it does |
 |---|---|
 | `tick` | sample, evaluate reverts, apply if `auto_balance` is on (or a revert fired) — what the timer runs |
+| `check [--wait SECONDS]` | don't wait for the timer: two ticks `--wait` seconds apart (5-300, default 15), then the pack table. Two because an identity needs two agreeing readings; after a swap, this settles it in one command |
 | `sample` | one measurement, no policy |
 | `status [--json \| --prometheus]` | wear summary; `--json` is the machine-readable view the applet consumes, `--prometheus` the text every tick writes to `metrics.prom` |
 | `report` | `status`, plus events, firmware read-back, and the current recommendation |
@@ -605,7 +607,9 @@ dell-battery-balance config get --json | python3 -m json.tool > /dev/null
 
 A Plasma 6 tray widget lives in `plasmoid/`. It sits next to the battery icon
 and shows each pack's EFC and calendar score, the measured EC drain order, the
-active policy, and buttons for Balance / Field / Restore. Any pending pack
+active policy, and buttons for Balance / Field / Restore, plus "Check packs
+now" (the battery icon in the header), which runs `check`: two readings
+about 15 seconds apart instead of waiting for the timer. Any pending pack
 identity questions (see Packs and swapping above) surface in the popup too,
 with buttons to answer them, since they show up in `status --json`'s
 `pending` field the same way they do on the CLI. Privileged actions go
@@ -737,6 +741,10 @@ bit keeps new files in the service group):
   general.sample_log_years=10` to keep more.
 - `metrics.prom` — the Prometheus text exposition of `status`, rewritten
   atomically on every tick (see Monitoring below).
+- `state.lock` — held (`flock`) across every command that rewrites
+  `state.json`, so the timer's tick, a manual `check` and a `pack ...` edit
+  wait for each other instead of one silently undoing the other. Read-only
+  commands never take it.
 - `wakealarm` — the epoch the conference profile wants the machine woken at
   for its top-off, rewritten every tick (empty when nothing is pending).
 
@@ -907,7 +915,7 @@ Nothing is queued; new work starts from an issue.
 python3 -m unittest discover -s tests -v
 ```
 
-375 tests across fourteen files (`test_wear_model.py`, `test_policy.py`,
+380 tests across fourteen files (`test_wear_model.py`, `test_policy.py`,
 `test_config.py`, `test_apply.py`, `test_registry.py`, `test_identity.py`, `test_cycles.py`, `test_cli.py`,
 `test_state.py`, `test_cli_surface.py`, `test_applet_package.py`,
 `test_metrics.py`, `test_overnight.py`, `test_wake_helper.py`), all against
@@ -932,7 +940,8 @@ reinsertion, and version-1-to-2 state migration; the full CLI surface,
 including profile switching, `--for`/`--until` one-off reverts, config
 get/set/validate/apply strictness (both TOML and `--json`), the `pack ...`
 subcommands and `reset --pack`, the `report` tenure table, the per-year
-sample-log rotation, the polkit-class gate (control vs.
+sample-log rotation, `check` (two readings, the bounded wait) and the
+state lock (exclusive, held by writers only, never nested), the polkit-class gate (control vs.
 pack-admin/configure), and the re-run through `pkexec` (which wrapper each
 class gets, read-only commands, root, the service account and private trees
 never re-run, the `sudo` fallback); the overnight state machine's four phases and its

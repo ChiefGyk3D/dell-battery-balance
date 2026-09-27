@@ -905,6 +905,80 @@ class FirmwareCycleOutputs(CliBase):
         self.assertIn('dbb_pack_efc_since_firmware_first{pack="A"} 0', prom)
 
 
+class CheckNow(CliBase):
+    EPPIDS = ("CN0XXXXXSLW0000E00AAA01", "CN0XXXXXSLW0000E00ABA01")
+
+    def ident(self, slot, eppid):
+        self.fs._w(f"class/power_supply/{slot}/eppid", eppid)
+
+    def check(self, *extra):
+        from unittest import mock
+        with mock.patch.object(self.cli.time, "sleep") as slept:
+            code, out, err = self.run_cli("check", *extra)
+        return code, out, err, slept
+
+    def test_resolves_a_swap_in_one_command(self):
+        self.ident("BAT0", self.EPPIDS[0]); self.ident("BAT1", self.EPPIDS[1])
+        self.run_cli("tick")
+        self.run_cli("pack", "new", "BAT0", "Alpha")
+        self.run_cli("pack", "new", "BAT1", "Bravo")
+        self.run_cli("tick")
+        self.ident("BAT0", self.EPPIDS[1]); self.ident("BAT1", self.EPPIDS[0])
+        code, out, err, slept = self.check()
+        self.assertEqual(code, 0, err)
+        slept.assert_called_once_with(15.0)
+        self.assertRegex(out, r"Bravo .* BAT0")
+        self.assertRegex(out, r"Alpha .* BAT1")
+        self.assertNotIn("PENDING", out)
+
+    def test_wait_is_bounded(self):
+        for bad in ("0", "4", "301"):
+            code, _, err, _ = self.check("--wait", bad)
+            self.assertNotEqual(code, 0, bad)
+            self.assertIn("--wait", err)
+        code, _, err, slept = self.check("--wait", "5")
+        self.assertEqual(code, 0, err)
+        slept.assert_called_once_with(5.0)
+
+    def test_is_control_class(self):
+        from unittest import mock
+        with mock.patch.object(self.cli.time, "sleep"):
+            code, _, err = self.run_cli("--polkit-class", "control", "--", "check")
+        self.assertEqual(code, 0, err)
+
+
+class StateLock(CliBase):
+    def test_lock_is_exclusive(self):
+        import fcntl
+        from dbb import state as st
+        with st.state_lock():
+            fd = os.open(os.path.join(os.environ["DBB_STATE_DIR"], "state.lock"), os.O_RDONLY)
+            try:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                os.close(fd)
+
+    def test_writers_hold_it_and_readers_do_not(self):
+        from unittest import mock
+        held = []
+        real = self.cli.state_lock
+
+        def spy():
+            held.append(True)
+            return real()
+        self.run_cli("tick")
+        with mock.patch.object(self.cli, "state_lock", side_effect=spy):
+            self.run_cli("status")
+            self.run_cli("pack", "list")
+            self.assertEqual(held, [])
+            self.run_cli("pack", "new", "BAT0", "A")
+            self.assertEqual(len(held), 1)
+            with mock.patch.object(self.cli.time, "sleep"):
+                self.run_cli("check")
+            self.assertEqual(len(held), 3)          # one per reading, never nested
+
+
 class Elevation(CliBase):
     """A writing command typed by an ordinary user re-runs itself through the
     right pkexec wrapper, so nobody has to know the wrapper paths."""

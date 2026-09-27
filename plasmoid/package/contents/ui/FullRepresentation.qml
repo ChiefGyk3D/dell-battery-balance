@@ -45,6 +45,16 @@ PlasmaExtras.Representation {
                 }
             }
             PlasmaComponents.ToolButton {
+                icon.name: "battery-good"
+                display: QQC2.AbstractButton.IconOnly
+                text: i18n("Check packs now")
+                enabled: !root.acting
+                onClicked: root.act("check", false)
+                PlasmaComponents.ToolTip {
+                    text: i18n("Read both packs now instead of waiting for the timer (two readings, about 15 s)")
+                }
+            }
+            PlasmaComponents.ToolButton {
                 icon.name: "view-refresh"
                 display: QQC2.AbstractButton.IconOnly
                 text: i18n("Refresh")
