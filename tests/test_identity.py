@@ -26,15 +26,20 @@ def tick(s, ts, **bats):
 
 
 class Fingerprint(unittest.TestCase):
+    def test_serial_is_not_part_of_it(self):
+        # Measured 2026-09-27: BAT1's serial_number mirrored BAT0's for a
+        # whole session while BAT1's eppid stayed its own.
+        self.assertEqual(registry.fingerprint(bat(serial="999")), registry.fingerprint(bat()))
+
     def test_eppid_and_serial(self):
-        self.assertEqual(registry.fingerprint(bat()), f"{EPPID_X}/101")
+        self.assertEqual(registry.fingerprint(bat()), EPPID_X)
 
     def test_no_eppid_is_unreadable(self):
         for bad in (None, "", "   ", "0000000000000000000000", "CN0"):
             self.assertIsNone(registry.fingerprint(bat(eppid=bad)), bad)
 
     def test_missing_serial_still_reads_eppid(self):
-        self.assertEqual(registry.fingerprint(bat(serial=None)), f"{EPPID_X}/")
+        self.assertEqual(registry.fingerprint(bat(serial=None)), EPPID_X)
 
 
 class Confirmation(unittest.TestCase):
@@ -48,7 +53,7 @@ class Confirmation(unittest.TestCase):
         tick(self.s, 0, BAT0=bat())
         self.assertIsNone(registry.slot_identity(self.s, "BAT0"))
         tick(self.s, 120, BAT0=bat())
-        self.assertEqual(registry.slot_identity(self.s, "BAT0"), f"{EPPID_X}/101")
+        self.assertEqual(registry.slot_identity(self.s, "BAT0"), EPPID_X)
 
     def test_changing_reading_restarts_the_count(self):
         tick(self.s, 0, BAT0=bat())
@@ -88,8 +93,8 @@ class LearnAndIdentify(unittest.TestCase):
         return self.s["packs"][name].get("fingerprint")
 
     def test_named_packs_learn_their_fingerprint(self):
-        self.assertEqual(self.fp("Alpha"), f"{EPPID_X}/101")
-        self.assertEqual(self.fp("Bravo"), f"{EPPID_Y}/102")
+        self.assertEqual(self.fp("Alpha"), EPPID_X)
+        self.assertEqual(self.fp("Bravo"), EPPID_Y)
         self.assertEqual(registry.identity_state(self.s["packs"]["Alpha"]), "read")
 
     def test_a_swap_is_identified_without_asking(self):
@@ -120,7 +125,7 @@ class LearnAndIdentify(unittest.TestCase):
         self.assertIn("BAT1", self.s["pending"])
         registry.assign(self.s, "BAT1", "Charlie", new=True)
         tick(self.s, 600, BAT0=bat(), BAT1=bat(eppid=EPPID_Z, serial="103"))
-        self.assertEqual(self.fp("Charlie"), f"{EPPID_Z}/103")
+        self.assertEqual(self.fp("Charlie"), EPPID_Z)
 
     def test_retired_pack_is_not_auto_identified(self):
         registry.note_absent(self.s, "BAT1", 240.0)
@@ -136,7 +141,7 @@ class LearnAndIdentify(unittest.TestCase):
         self.assertTrue(any("forgotten" in e["detail"] for e in self.s["events"]))
         tick(self.s, 240, BAT0=bat(), BAT1=bat(eppid=EPPID_Y, serial="102"))
         # relearned under the hand labels, no tenure churn
-        self.assertEqual(self.fp("Bravo"), f"{EPPID_X}/101")
+        self.assertEqual(self.fp("Bravo"), EPPID_X)
         self.assertEqual(registry.open_tenure(self.s, "BAT0")["pack"], "Bravo")
 
     def test_hand_assign_against_the_reading_forgets_that_fingerprint(self):
@@ -146,7 +151,7 @@ class LearnAndIdentify(unittest.TestCase):
         registry.assign(self.s, "BAT1", "Bravo")        # the operator says so
         self.assertIsNone(self.fp("Bravo"))
         tick(self.s, 600, BAT0=bat(), BAT1=bat(eppid=EPPID_Z, serial="103"))
-        self.assertEqual(self.fp("Bravo"), f"{EPPID_Z}/103")
+        self.assertEqual(self.fp("Bravo"), EPPID_Z)
         self.assertEqual(registry.open_tenure(self.s, "BAT1")["pack"], "Bravo")
 
     def test_identity_change_is_never_guessed_same(self):
@@ -180,6 +185,37 @@ class LearnAndIdentify(unittest.TestCase):
         self.assertEqual(self.s["pending"], {})
         self.assertEqual(t["last_charge_uah"], 2200000)
 
+    def test_mirrored_serial_does_not_hide_the_pack(self):
+        # BAT1 = Bravo reporting Alpha's serial: still Bravo, no question.
+        for ts in (240, 360):
+            tick(self.s, ts, BAT0=bat(), BAT1=bat(eppid=EPPID_Y, serial="101"))
+        self.assertEqual(registry.open_tenure(self.s, "BAT1")["pack"], "Bravo")
+        self.assertEqual(self.s["pending"], {})
+        self.assertEqual(self.fp("Bravo"), EPPID_Y)
+
+    def test_swap_during_suspend_with_mirrored_serial_is_recognised(self):
+        # The 2026-09-27 case: Charlie labelled in BAT1 at 80%, laptop asleep,
+        # Bravo swapped in at 80% with BAT0's serial showing.
+        registry.note_absent(self.s, "BAT1", 240.0)
+        for ts in (360, 480):
+            tick(self.s, ts, BAT0=bat(), BAT1=bat(eppid=EPPID_Z, serial="103", capacity=80, charge=3700000))
+        registry.assign(self.s, "BAT1", "Charlie", new=True)
+        tick(self.s, 600, BAT0=bat(), BAT1=bat(eppid=EPPID_Z, serial="103", capacity=80, charge=3700000))
+        for ts in (57000, 57120):
+            tick(self.s, ts, BAT0=bat(), BAT1=bat(eppid=EPPID_Y, serial="101", capacity=79, charge=3660000))
+        self.assertEqual(registry.open_tenure(self.s, "BAT1")["pack"], "Bravo")
+        self.assertEqual(self.s["pending"], {})
+        self.assertEqual(self.s["packs"]["Charlie"]["removed_at_soc"], 80)
+
+    def test_old_eppid_serial_fingerprints_are_migrated(self):
+        self.s["packs"]["Alpha"]["fingerprint"] = f"{EPPID_X}/101"
+        self.s["identity"]["slots"]["BAT0"] = {"fp": f"{EPPID_X}/101", "n": 9}
+        del self.s["identity"]["eppid_only"]            # as a 0.6.0 state file has it
+        tick(self.s, 240, BAT0=bat(), BAT1=bat(eppid=EPPID_Y, serial="102"))
+        self.assertEqual(self.fp("Alpha"), EPPID_X)
+        self.assertEqual(registry.open_tenure(self.s, "BAT0")["pack"], "Alpha")
+        self.assertEqual(self.s["pending"], {})
+
 
 class Clones(unittest.TestCase):
     """Packs that report one shared identity: the signature of counterfeit or
@@ -190,7 +226,7 @@ class Clones(unittest.TestCase):
         tick(s, 0, BAT0=bat())
         registry.assign(s, "BAT0", "A", new=True)
         tick(s, 120, BAT0=bat())
-        self.assertEqual(s["packs"]["A"]["fingerprint"], f"{EPPID_X}/101")
+        self.assertEqual(s["packs"]["A"]["fingerprint"], EPPID_X)
         tick(s, 240, BAT0=bat(), BAT1=bat())             # its twin arrives
         registry.assign(s, "BAT1", "B", new=True)
         tick(s, 360, BAT0=bat(), BAT1=bat())
@@ -220,7 +256,7 @@ class Clones(unittest.TestCase):
         registry.set_identity(s, "A", "forget")
         self.assertFalse(s["packs"]["A"]["identity_unreadable"])
         tick(s, 120, BAT0=bat())
-        self.assertEqual(s["packs"]["A"]["fingerprint"], f"{EPPID_X}/101")
+        self.assertEqual(s["packs"]["A"]["fingerprint"], EPPID_X)
 
     def test_packs_without_eppid_behave_as_before(self):
         s = st.new_state()

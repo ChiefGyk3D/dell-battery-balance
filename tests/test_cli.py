@@ -848,7 +848,8 @@ class PackIdentity(CliBase):
         self.assertEqual(code, 0, err)
         self.assertRegex(out, r"Alpha .* id read ")
         code, out, _ = self.run_cli("pack", "identity", "Alpha", "show")
-        self.assertIn(self.EPPIDS["BAT0"] + "/101", out)
+        self.assertIn(self.EPPIDS["BAT0"], out)
+        self.assertNotIn("/101", out)
 
     def test_swap_recognised_without_a_question(self):
         self.fs.bat("BAT0", present=0)
