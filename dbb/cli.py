@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dbb import VERSION, apply as apply_mod, config as cfg_mod, metrics, overnight, policy, registry, render
-from dbb.state import add_event, append_log, load_state, now_iso, prune_sample_logs, save_state
+from dbb.state import add_event, append_log, load_state, now_iso, prune_sample_logs, save_state, state_lock
 from dbb.sysfs import BATS, sample_all
 from dbb.wear import efc, integrate
 
@@ -570,6 +570,25 @@ def _registry_op(fn, *a, needs_cfg=False, **kw):
     save_state(state)
 
 
+CHECK_WAIT_MIN, CHECK_WAIT_MAX = 5, 300
+
+
+def cmd_check(args):
+    """Two ticks `--wait` seconds apart, then the pack table: what the timer
+    would conclude over its next two runs, now. Two readings, not one,
+    because a single reading is never trusted for identity (BAT1 has
+    mirrored BAT0 for one sample)."""
+    if not CHECK_WAIT_MIN <= args.wait <= CHECK_WAIT_MAX:
+        die(f"error: --wait must be {CHECK_WAIT_MIN}-{CHECK_WAIT_MAX} seconds")
+    for i in range(2):
+        if i:
+            print(f"second reading in {args.wait:g} s ...", file=sys.stderr)
+            time.sleep(args.wait)
+        with state_lock():
+            cmd_tick(args)
+    cmd_pack_list(args)
+
+
 def cmd_pack_list(args):
     state, cfg, _ = _view()
     now = time.time()
@@ -680,6 +699,10 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("tick", help="sample, evaluate reverts, apply if auto_balance").set_defaults(func=cmd_tick, cls="control")
+    sp = sub.add_parser("check", help="two readings now instead of waiting for the timer, then the pack table")
+    sp.add_argument("--wait", type=float, default=15.0, metavar="SECONDS",
+                    help=f"between the two readings ({CHECK_WAIT_MIN}-{CHECK_WAIT_MAX}, default 15)")
+    sp.set_defaults(func=cmd_check, cls="control")
     sp = sub.add_parser("sample", help="one measurement, no policy")
     sp.add_argument("--no-log", action="store_true")
     sp.set_defaults(func=cmd_sample, cls="control")
@@ -838,4 +861,8 @@ def main(argv=None):
         sys.exit(3)
     if _needs_elevation(args):
         _elevate(args, raw)
-    args.func(args)
+    if _read_only(args) or args.func is cmd_check:   # check locks per reading
+        args.func(args)
+        return
+    with state_lock():
+        args.func(args)

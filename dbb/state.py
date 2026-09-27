@@ -12,10 +12,12 @@
 """Persistent counters and sample log, stored under STATE_DIR."""
 
 import csv
+import fcntl
 import json
 import os
 import re
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -93,6 +95,21 @@ def load_state():
         _number_events(state)
         return state
     return new_state()
+
+
+@contextmanager
+def state_lock():
+    """Exclusive lock over a load-modify-save of state.json, so the timer's
+    tick, a manual `check` and a `pack ...` edit never overwrite each other.
+    Opened read-only: flock does not need write access, so a lock file
+    created by root with the service umask still works for the service."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    fd = os.open(STATE_DIR / "state.lock", os.O_RDONLY | os.O_CREAT, 0o664)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
 def save_state(state):
