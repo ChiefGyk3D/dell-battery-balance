@@ -65,9 +65,10 @@ same pack from taking every cycle.
 
 ## Why this tool has to measure rather than read
 
-The tool was built on two packs that reported **`cycle_count` 0 after
-months of use**, the same serial and the same ePPID: the clone pattern (see
-Packs and swapping). With no working counter to query, the tool derives wear
+The tool was built on two packs that shared one serial and one ePPID, the
+clone pattern (see Packs and swapping), and whose **`cycle_count` still
+read 0 after the tool had measured about three and four full cycles through
+them**. With no working counter to query, the tool derives wear
 itself, by integrating charge flow over time:
 
 - **EFC (equivalent full cycles)** = cumulative charge out ÷ design capacity.
@@ -218,8 +219,9 @@ actually know.
 > **Use genuine Dell packs, bought through Dell or an authorized reseller.**
 > Pack recognition depends on each pack reporting its own identity. The two
 > packs this tool was first developed against both reported the same serial
-> (`88`) and the same ePPID, which is what counterfeit and third-party packs
-> do: the identity data is blanked or copied from one donor pack, so every
+> (`88`) and the same ePPID, `CCDELLPN…`, which is not even in Dell's format
+> (a genuine one starts with a country code and the part number, such as
+> `CN0DRPTT…`). That is what counterfeit and third-party packs do: the identity data is blanked or copied from one donor pack, so every
 > pack looks the same. The tool still works with packs like that, but it can
 > only ask you which pack is which, never recognise one. It flags any two
 > packs that report one identity. A counterfeit or unbranded pack is also
