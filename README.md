@@ -235,8 +235,14 @@ assign` for one of those silently corrupts that pack's wear history.
 ### How a pack is recognised
 
 A genuine Dell pack reports an ePPID (Dell's per-unit part and sequence
-number, read through `dell-wmi-ddv` at `/sys/class/power_supply/BAT*/eppid`)
-and a serial number. The tool combines the two into a *fingerprint*:
+number, read through `dell-wmi-ddv` at `/sys/class/power_supply/BAT*/eppid`).
+That ePPID is the pack's *fingerprint*. The serial number is deliberately
+not part of it: on 2026-09-27 BAT1's `serial_number` reported BAT0's serial
+for a whole session while BAT1's `eppid` stayed its own. The serial comes
+through ACPI with BAT1's other readings, which have mirrored BAT0 before;
+the ePPID comes through Dell's WMI interface and has not. (0.5.0 to 0.6.0
+used ePPID plus serial; 0.6.1 converts stored fingerprints on its first
+tick.)
 
 - The first time you name a pack, the tool learns its fingerprint from the
   slot it is in. `pack list` then shows `id read`.
@@ -901,7 +907,7 @@ Nothing is queued; new work starts from an issue.
 python3 -m unittest discover -s tests -v
 ```
 
-371 tests across fourteen files (`test_wear_model.py`, `test_policy.py`,
+375 tests across fourteen files (`test_wear_model.py`, `test_policy.py`,
 `test_config.py`, `test_apply.py`, `test_registry.py`, `test_identity.py`, `test_cycles.py`, `test_cli.py`,
 `test_state.py`, `test_cli_surface.py`, `test_applet_package.py`,
 `test_metrics.py`, `test_overnight.py`, `test_wake_helper.py`), all against
@@ -915,7 +921,7 @@ the policy engine's role/band/pin/revert resolution; config schema
 validation and `set_dotted` coercion; firmware apply/read-back and mismatch
 recording; the pack registry's tenure lifecycle, swap detection (including
 both packs pulled and reinserted swapped) and identity guessing; pack
-identity read from the ePPID and serial (two-sample confirmation, the
+identity read from the ePPID alone (two-sample confirmation, a mirrored serial, the
 one-sample BAT1 mirror, recognition after a swap, a swap only the
 fingerprint can see, clones marked unreadable, hand labels winning, and the
 fingerprint never reaching the sample log, `status --json` or Prometheus),

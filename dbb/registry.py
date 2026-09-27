@@ -341,16 +341,29 @@ def unretire_pack(state, name):
 # ---------------------------------------------------------------- identity
 
 def fingerprint(v):
-    """ePPID + serial, or None when the pack offers no usable ePPID (no
-    dell-wmi-ddv, blank, or a filler value)."""
+    """The pack's ePPID, or None when it offers no usable one (no
+    dell-wmi-ddv, blank, or a filler value). The serial is not used: it
+    comes through ACPI with the rest of BAT1's readings, and on 2026-09-27
+    BAT1's serial_number mirrored BAT0's for a whole session while BAT1's
+    eppid (read through dell-wmi-ddv) stayed its own."""
     e = (v.get("eppid") or "").strip()
     if len(e) < EPPID_MIN_LEN or len(set(e)) == 1:
         return None
-    return f"{e}/{(v.get('serial') or '').strip()}"
+    return e
 
 
 def _ident(state):
-    return state.setdefault("identity", {"slots": {}, "twin_samples": 0})
+    ident = state.setdefault("identity", {"slots": {}, "twin_samples": 0})
+    if not ident.get("eppid_only"):
+        # 0.5.0-0.6.0 stored "EPPID/serial"; keep the ePPID.
+        for p in state.get("packs", {}).values():
+            if p.get("fingerprint"):
+                p["fingerprint"] = p["fingerprint"].split("/", 1)[0]
+        for rec in ident["slots"].values():
+            if rec and rec.get("fp"):
+                rec["fp"] = rec["fp"].split("/", 1)[0]
+        ident["eppid_only"] = True
+    return ident
 
 
 def read_identities(state, s):
