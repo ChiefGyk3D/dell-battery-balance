@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # No pip entry: the repository has no requirements file or pyproject, so
+  # Dependabot would have nothing to read. The code is standard library only.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

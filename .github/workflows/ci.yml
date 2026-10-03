@@ -1,0 +1,53 @@
+# CI for dell-battery-balance. The jobs live in ChiefGyk3D/git-your-ship-together; this file
+# says only what is specific to this repository.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    uses: ChiefGyk3D/git-your-ship-together/.github/workflows/python-ci.yml@da9fa322b13a867980fa363ea87f86065a18cd19 # v1.7.0
+    permissions:
+      contents: read
+      id-token: write   # Doppler OIDC (see the shared repository's README)
+    secrets:
+      DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}   # optional Service Token fallback; unset means OIDC only
+    with:
+      python-versions: '["3.13"]'  # argparse '--' handling differs before 3.13; issue #13
+      runners: '["ubuntu-24.04", "ubuntu-24.04-arm"]'
+      distros: '["debian:13", "parrotsec/core"]'  # the two that ship Python 3.13; issue #13
+      distro-continue-on-error: true  # two tests assume a non-root user; issue #12
+      distro-runners: '["ubuntu-24.04", "ubuntu-24.04-arm"]'
+      install-command: python -m pip install --upgrade pip   # standard library only; no package to install
+      test-command: python -m unittest discover -s tests -v   # what the README documents
+      lint-install-command: pip install ruff
+      lint-command: ruff check .
+      lint-continue-on-error: true   # Pre-existing, now visible: ruff reports 93 findings; see the PR body
+      docker-build: false
+      egress-policy: block
+      doppler-project: ci
+      doppler-config: ci
+      doppler-identity-id: ${{ vars.DOPPLER_IDENTITY_ID }}
+
+  shell:
+    uses: ChiefGyk3D/git-your-ship-together/.github/workflows/bash-ci.yml@da9fa322b13a867980fa363ea87f86065a18cd19 # v1.7.0
+    permissions:
+      contents: read
+    with:
+      runners: '["ubuntu-24.04", "ubuntu-24.04-arm"]'
+      shfmt-args: -i 4 -ci
+      shellcheck-continue-on-error: true   # Pre-existing, now visible: SC2174 in libexec/dell-battery-balance-wake, SC2115 in uninstall.sh; see the PR body
+      shfmt-continue-on-error: true   # Pre-existing, now visible: 4 of the 6 scripts drift from shfmt; see the PR body
+      workflow-lint: false   # the ci job above already lints the workflow files
+      egress-policy: block
