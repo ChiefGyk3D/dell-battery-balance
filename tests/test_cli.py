@@ -1224,10 +1224,18 @@ class Overnight(CliBase):
         self.assertEqual(code, 0)
 
     def test_leave_at_exits_2_on_firmware_write_error(self):
-        # Make a sysman attribute unwritable to simulate a firmware write failure
-        p = os.path.join(os.environ["DBB_SYSFS_ROOT"], "class/firmware-attributes/dell-wmi-sysman/attributes/SliceBattCustomChargeStop/current_value")
-        os.chmod(p, 0o444)
-        self._mode_restore.append(p)
+        # Simulate a firmware write failure by making the write report an error;
+        # chmod would not do it, because root ignores file modes.
+        real = self.sysfs.write_sysman
+
+        def failing_write(attr, value, password=None):
+            if attr == "SliceBattCustomChargeStop":
+                return f"{attr}: [Errno 13] Permission denied"
+            return real(attr, value, password)
+
+        patcher = mock.patch.object(self.sysfs, "write_sysman", side_effect=failing_write)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         with mock.patch("time.time", return_value=self.at(23, 30)):
             self.run_cli("tick")
             code, out, err = self.run_cli("leave-at", "06:00")

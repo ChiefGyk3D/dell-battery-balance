@@ -5,6 +5,12 @@ set -euo pipefail
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SVC=dell-battery-balance
 
+# Python 3.13 or newer is required (argparse "--" handling; see README).
+python3 -c 'import sys; sys.exit(sys.version_info < (3, 13))' || {
+    echo "Python 3.13 or newer is required (found $(python3 -V 2>&1)). Supported: Debian 13, Parrot, Pop!_OS with a 3.13 interpreter." >&2
+    exit 1
+}
+
 # Stop anything from the previous layout.
 systemctl disable --now dell-battery-balance-sample.timer 2>/dev/null || true
 systemctl disable --now dell-battery-balance.timer 2>/dev/null || true
