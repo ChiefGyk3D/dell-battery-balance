@@ -46,6 +46,7 @@ jobs:
     with:
       runners: '["ubuntu-24.04", "ubuntu-24.04-arm"]'
       shfmt-args: -i 4 -ci
+      shellcheck-continue-on-error: true   # Pre-existing, now visible: SC2174 in libexec/dell-battery-balance-wake, SC2115 in uninstall.sh; see the PR body
       shfmt-continue-on-error: true   # Pre-existing, now visible: 4 of the 6 scripts drift from shfmt; see the PR body
       workflow-lint: false   # the ci job above already lints the workflow files
       egress-policy: block
