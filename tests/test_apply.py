@@ -1,4 +1,5 @@
 import os, sys, tempfile, unittest
+from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 
 
@@ -41,10 +42,17 @@ class ApplyBands(unittest.TestCase):
         self.assertEqual(r["written"], [])
 
     def test_mismatch_recorded(self):
-        # Make the stop attribute silently refuse: writing leaves the old value.
-        p = os.path.join(self.tmp.name, "class/firmware-attributes/dell-wmi-sysman/attributes/SliceBattCustomChargeStop/current_value")
-        os.chmod(p, 0o444)
-        r = self.apply.apply_bands({"BAT1": (50, 70)}, self.state)
+        # Make the stop attribute refuse the write, leaving the old value. Done by
+        # wrapping the write rather than chmod, because root ignores file modes.
+        real = self.sysfs.write_sysman
+
+        def refuse_stop(attr, value, password=None):
+            if attr == "SliceBattCustomChargeStop":
+                return f"{attr}: [Errno 13] Permission denied"
+            return real(attr, value, password)
+
+        with mock.patch.object(self.sysfs, "write_sysman", side_effect=refuse_stop):
+            r = self.apply.apply_bands({"BAT1": (50, 70)}, self.state)
         self.assertIn("BAT1", r["errors"])
         self.assertEqual(self.state["firmware"]["BAT1"]["requested"], [50, 70])
         self.assertNotEqual(self.state["firmware"]["BAT1"]["observed"], [50, 70])

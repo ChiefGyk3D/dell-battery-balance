@@ -332,6 +332,8 @@ def save(cfg, path=CONFIG_FILE):
         bak_tmp.write_bytes(path.read_bytes())
         os.replace(bak_tmp, bak)
         try:
+            # 0664 is intended: the service account and the operators group edit this file (see README, State).
+            # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
             os.chmod(bak, 0o664)
         except OSError:
             pass
@@ -339,6 +341,8 @@ def save(cfg, path=CONFIG_FILE):
     tmp.write_text(emit(cfg))
     os.replace(tmp, path)
     try:
+        # 0664 is intended: the service account and the operators group edit this file (see README, State).
+        # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
         os.chmod(path, 0o664)
     except OSError:
         pass

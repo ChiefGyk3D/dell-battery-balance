@@ -10,6 +10,13 @@ Dell Latitude 5430 Rugged (primary + slice).
 > other models is welcome; see Supported hardware below for what to check
 > and what to send.
 
+## Supported hosts
+
+**Python 3.13 or newer is required** (argparse `--` handling differs before
+it). Debian 13, Parrot and Pop!_OS with a 3.13 interpreter are the supported
+hosts; Debian 12 and Ubuntu 24.04 ship an older Python and are not
+supported. `install.sh` refuses to run on an older interpreter.
+
 ## Supported hardware
 
 | | Tested |

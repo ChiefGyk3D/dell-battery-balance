@@ -24,10 +24,9 @@ jobs:
     secrets:
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}   # optional Service Token fallback; unset means OIDC only
     with:
-      python-versions: '["3.13"]'  # argparse '--' handling differs before 3.13; issue #13
+      python-versions: '["3.13"]'  # Python 3.13 is required: argparse '--' handling differs before it (issue #13)
       runners: '["ubuntu-24.04", "ubuntu-24.04-arm"]'
-      distros: '["debian:13", "parrotsec/core"]'  # the two that ship Python 3.13; issue #13
-      distro-continue-on-error: true  # two tests assume a non-root user; issue #12
+      distros: '["debian:13", "parrotsec/core"]'  # the supported hosts that ship Python 3.13 (issue #13)
       distro-runners: '["ubuntu-24.04", "ubuntu-24.04-arm"]'
       install-command: python -m pip install --upgrade pip   # standard library only; no package to install
       test-command: python -m unittest discover -s tests -v   # what the README documents
