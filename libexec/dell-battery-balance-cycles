@@ -1,0 +1,75 @@
+#!/bin/sh
+# The third piece of root code in dell-battery-balance, run as
+# ExecStartPre=+ before every tick. It reads each pack's own cycle count from
+# Dell's DDV WMI interface and writes only those integers where the service
+# can read them.
+#
+# Why it exists: on the Latitude 5430 Rugged the ACPI batteries implement
+# _BIF, not _BIX, and _BIF has no cycle count, so the kernel's cycle_count
+# is a placeholder 0. The DDV method (the one dell-wmi-ddv reads the ePPID
+# from) has a cycle-count call, 0x0C, that the kernel never exposes. Calling
+# it needs the acpi_call module, which lets root run any ACPI method; the
+# service account therefore never touches /proc/acpi/call. This script makes
+# exactly two kinds of call, the ePPID (0x0D) and the cycle count (0x0C), for
+# DDV index 1 (BAT0) and 2 (BAT1), and takes no input from the service.
+#
+# It does nothing unless root loaded acpi_call (install.sh --ddv-cycles). A
+# count is written for a slot only when the ePPID at that index matches the
+# slot's own eppid, so an index that does not map to the slot never credits
+# the wrong pack. The ePPID itself is never written anywhere.
+set -u
+SYSFS=${DBB_SYSFS_ROOT:-/sys}
+CALL=${DBB_ACPI_CALL:-/proc/acpi/call}
+OUT_DIR=${DBB_CYCLES_DIR:-/run/dell-battery-balance-cycles}
+OUT=$OUT_DIR/cycles
+DDV_GUID=8A42EA14-4F2A-FD45-6422-0087F7A7E608
+
+if [ ! -e "$CALL" ] && [ -z "${DBB_ACPI_CALL_CMD:-}" ]; then
+    rm -f "$OUT"
+    exit 0
+fi
+
+dev=""
+for d in "$SYSFS"/bus/wmi/devices/"$DDV_GUID"*; do
+    [ -e "$d/object_id" ] && dev=$d && break
+done
+[ -n "$dev" ] || exit 0
+obj=$(head -c 8 "$dev/object_id" | tr -d '[:space:]')
+# The WMI device sits three levels under its PNP0C14 platform device (via
+# wmi_bus/wmi_bus-*); that device's ACPI path plus "WM" and the object id
+# is the method dell-wmi-ddv calls.
+path=$(head -c 128 "$(readlink -f "$dev")/../../../firmware_node/path" 2>/dev/null | tr -d '[:space:]')
+case "$obj" in [A-Z0-9][A-Z0-9]) ;; *) exit 0 ;; esac
+case "$path" in \\*) ;; *) exit 0 ;; esac
+case "$path" in *[!A-Z0-9_.\\]*) exit 0 ;; esac
+method="$path.WM$obj"
+
+call() { # call <method id> <ddv index>
+    req=$(printf '%s 0 %s b%02x0000' "$method" "$1" "$2")
+    if [ -n "${DBB_ACPI_CALL_CMD:-}" ]; then
+        $DBB_ACPI_CALL_CMD "$req"
+    else
+        printf '%s' "$req" >"$CALL" && head -c 512 "$CALL" | tr -d '\0'
+    fi
+}
+
+install -d -m755 -o root -g root "$OUT_DIR" 2>/dev/null || mkdir -p "$OUT_DIR"
+[ -L "$OUT_DIR" ] && exit 0
+(
+    flock 9
+    for slot in 0 1; do
+        e=$(head -c 64 "$SYSFS/class/power_supply/BAT$slot/eppid" 2>/dev/null | tr -d '[:space:]')
+        [ ${#e} -ge 10 ] || continue
+        case "$(call 0x0D $((slot + 1)))" in *"$e"*) ;; *) continue ;; esac
+        n=$(call 0x0C $((slot + 1)) | tr -d '[:space:]')
+        case "$n" in
+            0x[0-9a-fA-F]*) n=$(printf '%d' "$n" 2>/dev/null) || continue ;;
+            *) continue ;;
+        esac
+        [ "$n" -ge 0 ] && [ "$n" -le 100000 ] || continue
+        echo "BAT$slot $n"
+    done >"$OUT_DIR/.cycles.$$"
+    mv -f "$OUT_DIR/.cycles.$$" "$OUT"
+    chmod 644 "$OUT"
+) 9>"$OUT_DIR/.lock"
+exit 0

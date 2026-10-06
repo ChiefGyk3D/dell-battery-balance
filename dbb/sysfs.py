@@ -19,6 +19,10 @@ SYSFS_ROOT = Path(os.environ.get("DBB_SYSFS_ROOT", "/sys"))
 PS = SYSFS_ROOT / "class/power_supply"
 SYSMAN = SYSFS_ROOT / "class/firmware-attributes/dell-wmi-sysman"
 BATS = ("BAT0", "BAT1")
+# Written by libexec/dell-battery-balance-cycles (root) from Dell's DDV WMI
+# cycle-count call, when the admin enabled it; "BAT0 2" per line.
+DDV_CYCLES = Path(os.environ.get("DBB_CYCLES_FILE", "/run/dell-battery-balance-cycles/cycles"))
+DDV_CYCLES_MAX_AGE_S = 600
 
 # Slot -> the dell-wmi-sysman attribute names that control it.
 SYSMAN_ATTRS = {
@@ -63,6 +67,24 @@ def boot_id():
 # measurement
 # --------------------------------------------------------------------------
 
+def ddv_cycles(now=None):
+    """Each slot's cycle count as the pack reported it through DDV WMI, or {}
+    when the helper is off or its file is stale."""
+    try:
+        st = DDV_CYCLES.stat()
+        if (now or time.time()) - st.st_mtime > DDV_CYCLES_MAX_AGE_S:
+            return {}
+        text = DDV_CYCLES.read_text()[:256]
+    except OSError:
+        return {}
+    out = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] in BATS and parts[1].isdigit():
+            out[parts[0]] = int(parts[1])
+    return out
+
+
 def sample_all():
     """One synchronous read of both packs plus AC state."""
     ac = read_int(PS / "AC" / "online")
@@ -72,6 +94,7 @@ def sample_all():
         "ac_online": ac,
         "bats": {},
     }
+    ddv = ddv_cycles(out["ts"])
     for b in BATS:
         d = PS / b
         if not d.exists() or read_int(d / "present") != 1:
@@ -90,10 +113,11 @@ def sample_all():
             # dell-wmi-ddv. Kept out of the sample log (CSV_FIELDS).
             "eppid": read_str(d / "eppid"),
             "serial": read_str(d / "serial_number"),
-            # The pack's own counter. Measured 0 on the clone pair after
-            # months of use; whether genuine packs move it is what
-            # registry.track_cycles exists to find out.
-            "cycle_count": read_int(d / "cycle_count"),
+            # The pack's own counter. The kernel's cycle_count is a
+            # placeholder 0 where the battery only implements ACPI _BIF (the
+            # 5430 Rugged); the DDV WMI reading, when enabled, is the pack's.
+            "cycle_count": ddv.get(b, read_int(d / "cycle_count")),
+            "cycle_source": "ddv" if b in ddv else "sysfs",
         }
     return out
 

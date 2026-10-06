@@ -25,6 +25,7 @@ supported. `install.sh` refuses to run on an older interpreter.
 | BIOS | 1.45.0 |
 | OS / kernel | Parrot Security 7.3, Linux 7.1 (`dell-wmi-sysman`, `dell-wmi-ddv` from the stock kernel) |
 | Packs | Dell DRPTT67 (genuine), plus two clone-signature packs (see Packs and swapping) |
+| Firmware cycle count | **Confirmed 2026-10-05**: the packs' own count, read through Dell DDV WMI with `acpi_call` (`install.sh --ddv-cycles`); the kernel's `cycle_count` is a placeholder 0 here (see Firmware cycle count) |
 
 **Unconfirmed on anything else.** The tool depends on platform features,
 not on the model name, so another model works if it has all of these:
@@ -38,6 +39,9 @@ not on the model name, so another model works if it has all of these:
 - For recognising packs by their own identity: `dell-wmi-ddv`, which adds
   an `eppid` file to each battery. Without it every pack is asked about,
   as on 0.4.
+- Optional, for the packs' own cycle count: the same DDV WMI interface
+  plus the `acpi_call` module. `sudo ./install.sh` reports what the
+  machine has; see Firmware cycle count.
 
 To check a machine and report back, run these (none needs root, and none
 prints a pack's serial or ePPID):
@@ -86,11 +90,13 @@ itself, by integrating charge flow over time:
   used *only* to compare the two packs against each other. Both packs are
   measured identically, so the absolute scale does not matter.
 
-Genuine Dell packs may keep a real counter. Whether they do is an open
-measurement, not an assumption: from 0.6.0 the tool records each pack's
-`cycle_count` and every change to it, with its own EFC alongside (see
-Firmware cycle count below). EFC stays the number the balancer uses until
-that comparison says otherwise.
+The packs do keep a real counter; the kernel just cannot see it on this
+machine. The 5430 Rugged's ACPI batteries implement `_BIF`, which has no
+cycle-count field, not `_BIX`, so `cycle_count` in sysfs is a placeholder 0
+for every pack, genuine or not. Dell's DDV WMI interface reads the pack's
+own count, and from 0.8.0 the tool can use it (see Firmware cycle count
+below). EFC stays the number the balancer uses; the firmware count sits
+beside it as a cross-check.
 
 ## The lever
 
@@ -315,7 +321,53 @@ that tend to get pasted or scraped.
 
 ### Firmware cycle count
 
-Each named pack's `cycle_count` is recorded the first time it is read, and
+**Where the number comes from.** On the Latitude 5430 Rugged (BIOS 1.45.0)
+the kernel's `/sys/class/power_supply/BAT*/cycle_count` always reads 0: the
+DSDT gives both batteries `_BIF` and no `_BIX`, and `_BIF` has no cycle
+count, so the kernel fills in 0. The real count is behind Dell's DDV WMI
+method (GUID `8A42EA14-4F2A-FD45-6422-0087F7A7E608`, `\_SB_.AMWV.WMDV` on
+this machine), the interface `dell-wmi-ddv` already reads the ePPID from.
+Its call `0x0C` selects a pack through the embedded controller's battery
+mailbox and returns EC word `0x3E`. The driver defines that call
+(`DELL_DDV_BATTERY_CYCLE_COUNT`) but does not expose it. DDV index 1 is
+BAT0 and index 2 is BAT1.
+
+Measured 2026-10-05 against the tool's own count:
+
+| Pack | Slot | DDV WMI count | Tool EFC | kernel `cycle_count` |
+|---|---|---|---|---|
+| Bravo (DRPTT67) | BAT0 | 2 | 2.46 | 0 |
+| Alpha (DRPTT67) | BAT1 | 3 | 2.79 | 0 |
+
+**Turning it on.** Calling an arbitrary WMI method from userspace needs
+the `acpi_call` module, which lets root run any ACPI method. So it is
+opt-in, and the service account never touches it:
+
+```sh
+sudo ./install.sh --ddv-cycles
+```
+
+This installs `acpi-call-dkms` if it is missing (on apt systems; elsewhere
+install your distribution's package first), loads `acpi_call`, loads it at
+boot from `/etc/modules-load.d/dell-battery-balance-acpi_call.conf`, and
+reads the counts once so you see them. A plain `sudo ./install.sh` makes no
+change: it prints each pack's kernel `cycle_count`, whether the DDV
+interface is present, and the command above when every count reads 0.
+`uninstall.sh` removes the boot-time load; it leaves the package installed.
+
+The read is done by a third root helper,
+`/usr/local/libexec/dell-battery-balance-cycles` (`ExecStartPre=+`, see
+Privilege model). It does nothing unless `acpi_call` is loaded. Otherwise it
+finds the DDV method from sysfs (the WMI device's object id and its parent's
+ACPI path, refused unless it is a plain ACPI name), and for each slot asks
+for the ePPID (`0x0D`) and the count (`0x0C`) and nothing else. A count is
+written only when the ePPID at that index matches the slot's own `eppid`
+file. It writes `BAT0 2`-style lines to the root-owned
+`/run/dell-battery-balance-cycles/cycles`, never the ePPID. The tick uses that
+file when it is under 10 minutes old and falls back to the kernel's value
+otherwise.
+
+**How it is recorded.** Each named pack's `cycle_count` is recorded the first time it is read, and
 every later change is logged as a `cycles` event that puts the tool's own
 count beside it:
 
@@ -335,6 +387,14 @@ both slots report one identity. Together these stop BAT1's one-sample
 mirror of BAT0 from moving the wrong pack's counter. A count that goes
 **down** is a `warning` event: a genuine counter only climbs, so a drop
 means it was reset or the pack is not what it reports.
+
+When a pack's count starts coming from DDV WMI, its record starts over from
+that reading, with one `cycles` event (`Alpha: firmware cycle count 3, read
+from the pack through Dell WMI (the kernel's cycle_count read 0)`), not a
+false `0 -> 3` change. The switch also needs two agreeing samples from the
+new source, since a new pack's real 0 and the placeholder 0 look the same.
+Once a pack is on DDV, a stale or missing DDV reading is skipped rather than
+falling back to the placeholder.
 
 The count is kept per pack in `state.json` and is not added to the CSV
 sample log, whose columns stay fixed within a year's file.
@@ -397,6 +457,10 @@ rule and both polkit actions, and the systemd unit + timer — then enables
 `dell-battery-balance.timer` immediately (tick every 2 minutes; ticks sample
 unconditionally and apply the resolved profile's bands whenever
 `general.auto_balance` is true, which is the default).
+
+Add `--ddv-cycles` to also read each pack's own cycle count through Dell
+WMI (installs and loads `acpi_call`; see Firmware cycle count). Without it,
+the installer only reports whether this machine needs it.
 
 ```sh
 sudo ./uninstall.sh            # leaves /etc and /var/lib in place
@@ -531,7 +595,7 @@ does not recognize even though it is valid, equivalent TOML.
 
 ## Privilege model
 
-Root runs exactly one thing after install: a ~15-line grant script,
+Root runs three small helpers after install. The first is a ~15-line grant script,
 `/usr/local/libexec/dell-battery-balance-grant`. Everything that parses
 config, evaluates policy, or writes a firmware value runs as a scoped system
 account, `dell-battery-balance` (`--system`, `nologin`, no other members —
@@ -562,6 +626,15 @@ nor clear an alarm), and after a wake it caused puts the machine back to
 sleep if the lid is closed and `general.topoff_resuspend` is true. It reads
 32 bytes, accepts only an integer at most 24 h ahead, never follows a
 symlink planted at the marker path, and touches nothing else.
+
+A third, `/usr/local/libexec/dell-battery-balance-cycles`
+(`ExecStartPre=+`), exists only for the opt-in firmware cycle count and
+exits at once unless root loaded `acpi_call`. `acpi_call` can run any ACPI
+method, so `/proc/acpi/call` stays root-only and the service account never
+gets it. The helper takes no input from the service: it makes two fixed DDV
+WMI calls per slot (ePPID and cycle count), writes only integers to a
+root-owned directory under `/run`, and refuses a DDV device whose ACPI path
+is not a plain ACPI name.
 
 Two polkit actions gate the two wrappers used above:
 
@@ -839,6 +912,10 @@ warning with `profile extend`, `--until`), per
 serials, and a named pack is recognised from then on (see How a pack is
 recognised). 0.6.0 records each pack's firmware `cycle_count` against the
 tool's EFC, to find out whether genuine packs keep a working counter.
+They do, but the kernel shows a placeholder 0 on this machine; 0.8.0 reads
+the packs' real count through Dell DDV WMI (opt-in, `install.sh
+--ddv-cycles`). Exposing that call in `dell-wmi-ddv` itself, so no
+`acpi_call` is needed, is the upstream follow-up.
 Nothing is queued; new work starts from an issue.
 
 ## Known limits
@@ -930,10 +1007,11 @@ Nothing is queued; new work starts from an issue.
 python3 -m unittest discover -s tests -v
 ```
 
-383 tests across fourteen files (`test_wear_model.py`, `test_policy.py`,
+401 tests across fifteen files (`test_wear_model.py`, `test_policy.py`,
 `test_config.py`, `test_apply.py`, `test_registry.py`, `test_identity.py`, `test_cycles.py`, `test_cli.py`,
 `test_state.py`, `test_cli_surface.py`, `test_applet_package.py`,
-`test_metrics.py`, `test_overnight.py`, `test_wake_helper.py`), all against
+`test_metrics.py`, `test_overnight.py`, `test_wake_helper.py`,
+`test_ddv_cycles.py`), all against
 a fake `/sys` tree and temp state/config dirs (`DBB_SYSFS_ROOT`,
 `DBB_STATE_DIR`, `DBB_CONFIG_DIR`) — never real hardware or files. Coverage
 includes: three full sequential-discharge cycles, asserting the pack doing
@@ -949,7 +1027,11 @@ one-sample BAT1 mirror, recognition after a swap, a swap only the
 fingerprint can see, clones marked unreadable, hand labels winning, and the
 fingerprint never reaching the sample log, `status --json` or Prometheus),
 the firmware cycle counter (two-sample agreement, identity and mirror
-guards, the decrease warning, following the pack across slots),
+guards, the decrease warning, following the pack across slots, the switch
+from the kernel placeholder to the DDV WMI reading without a false change
+or a fallback, and the root helper against a fake `acpi_call`: only the two
+fixed calls, the ePPID-to-slot match, malformed replies and ACPI paths
+refused),
 totals/rotation-hint math with bench calendar-aging carried across a
 reinsertion, and version-1-to-2 state migration; the full CLI surface,
 including profile switching, `--for`/`--until` one-off reverts, config
