@@ -259,12 +259,28 @@ the ePPID comes through Dell's WMI interface and has not. (0.5.0 to 0.6.0
 used ePPID plus serial; 0.6.1 converts stored fingerprints on its first
 tick.)
 
-- The first time you name a pack, the tool learns its fingerprint from the
-  slot it is in. `pack list` then shows `id read`.
-- When a pack is inserted, or a swap is detected, and its fingerprint
-  matches exactly one known pack, the tool labels it as that pack without
-  asking. A pack it has never seen is asked about as before; once you name
-  it, it is learned too.
+- **You are asked only when the tool cannot tell.** When a pack is
+  inserted, or a swap is detected, and the pack reports an ePPID, the
+  question is held back while the reading confirms (two samples). Then:
+  - if the fingerprint matches exactly one known pack, the slot is labelled
+    as that pack, with no question;
+  - if no pack, current or retired, has ever had that fingerprint, and the
+    ePPID carries the pack's own Dell part number (below), the pack is
+    registered as new and named automatically: the next unused name from
+    Alpha, Bravo, Charlie ... Zulu. An event says so, with the rename
+    command. Measured 2026-10-05: all three genuine DRPTT67 packs read
+    `CN0DRPTT...` beside `model_name` `DELL DRPTT67`; the clone pair read
+    `CCDELLPN...` beside `DELL NY5PG`;
+  - otherwise (no part number match, a retired pack's fingerprint, clones in
+    both slots), the question is asked, at the latest three samples (about
+    six minutes) after the pack went in.
+- A pack with no ePPID at all is asked about at once, as before 0.9.0.
+- **A wrong automatic call is yours to fix**, and the fix sticks:
+  `pack rename Delta Spare` renames an automatically named pack (its
+  fingerprint goes with it), and `pack reassign` / `pack swap` relabel a
+  slot; a label set by hand always wins over the reading (below).
+- The first time you name a pack by hand, the tool learns its fingerprint
+  from the slot it is in. `pack list` then shows `id read`.
 - A reading must agree over **two consecutive samples** (about four minutes
   on the timer, or about 15 seconds with `dell-battery-balance check`, or
   the applet's "Check packs now" button) before it counts. A single sample is not trusted, because
@@ -278,10 +294,10 @@ tick.)
   where the old one left off). Measured on the bench on 2026-09-26: Bravo
   out at 28%, Charlie in at 27% twelve seconds later, which is inside one
   tick and inside the charge check's tolerance; the fingerprint caught it
-  on the second tick. The question is asked with the guess `different` and
-  the applet hides its "Same" button, since the pack itself has said it is
-  not the previous one. A new tenure opens and is labelled from the
-  fingerprint.
+  on the second tick. A new tenure opens and is labelled from the
+  fingerprint, or the pack is registered as new, as above. If it ends up
+  asked, the guess is `different` and the applet hides its "Same" button,
+  since the pack itself has said it is not the previous one.
 - **Two packs reporting the same identity** are never trusted. A sample in
   which both slots read the same fingerprint never identifies either pack.
   If that lasts for 15 samples in a row (30 minutes), both packs are marked
@@ -915,7 +931,9 @@ tool's EFC, to find out whether genuine packs keep a working counter.
 They do, but the kernel shows a placeholder 0 on this machine; 0.8.0 reads
 the packs' real count through Dell DDV WMI (opt-in, `install.sh
 --ddv-cycles`). Exposing that call in `dell-wmi-ddv` itself, so no
-`acpi_call` is needed, is the upstream follow-up.
+`acpi_call` is needed, is the upstream follow-up. 0.9.0 stops asking
+about packs it can recognise or vouch for: known packs are labelled
+silently, and new genuine packs are registered and named automatically.
 Nothing is queued; new work starts from an issue.
 
 ## Known limits
@@ -1007,7 +1025,7 @@ Nothing is queued; new work starts from an issue.
 python3 -m unittest discover -s tests -v
 ```
 
-401 tests across fifteen files (`test_wear_model.py`, `test_policy.py`,
+409 tests across fifteen files (`test_wear_model.py`, `test_policy.py`,
 `test_config.py`, `test_apply.py`, `test_registry.py`, `test_identity.py`, `test_cycles.py`, `test_cli.py`,
 `test_state.py`, `test_cli_surface.py`, `test_applet_package.py`,
 `test_metrics.py`, `test_overnight.py`, `test_wake_helper.py`,
@@ -1022,7 +1040,9 @@ the policy engine's role/band/pin/revert resolution; config schema
 validation and `set_dotted` coercion; firmware apply/read-back and mismatch
 recording; the pack registry's tenure lifecycle, swap detection (including
 both packs pulled and reinserted swapped) and identity guessing; pack
-identity read from the ePPID alone (two-sample confirmation, a mirrored serial, the
+identity read from the ePPID alone (questions held back while a reading
+confirms, new genuine packs registered and named without asking and clones
+never, two-sample confirmation, a mirrored serial, the
 one-sample BAT1 mirror, recognition after a swap, a swap only the
 fingerprint can see, clones marked unreadable, hand labels winning, and the
 fingerprint never reaching the sample log, `status --json` or Prometheus),

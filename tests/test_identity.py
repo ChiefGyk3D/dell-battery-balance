@@ -10,11 +10,18 @@ EPPID_Y = "CN0XXXXXSLW0000E00ABA01"
 EPPID_Z = "CN0XXXXXSLW0000E00ACA01"
 
 
-def bat(charge=2300000, full=DESIGN, capacity=50, eppid=EPPID_X, serial="101", design=DESIGN):
+# A model name whose part number the placeholder ePPIDs carry (CN0XXXXX...),
+# as a genuine DRPTT67 pack's ePPID carries DRPTT.
+MODEL = "DELL XXXXX67"
+GENUINE = "CN0XXXXXSLW0000E00ADA01"
+CLONE = "CCDELLPN0000XXXXXXXXX00"     # the clone pair's shape: no part number
+
+
+def bat(charge=2300000, full=DESIGN, capacity=50, eppid=EPPID_X, serial="101", design=DESIGN, model=None):
     return dict(status="Discharging", capacity=capacity, charge_now_uah=charge,
                 charge_full_uah=full, charge_full_design_uah=design,
                 voltage_now_uv=11400000, voltage_min_design_uv=11400000,
-                current_now_ua=0, temp_dc=313, present=1, eppid=eppid, serial=serial)
+                current_now_ua=0, temp_dc=313, present=1, eppid=eppid, serial=serial, model=model)
 
 
 def sample(ts, ac=1, **bats):
@@ -102,7 +109,7 @@ class LearnAndIdentify(unittest.TestCase):
         # heuristic alone cannot see this.
         tick(self.s, 240)                                   # both out
         tick(self.s, 480, BAT0=bat(eppid=EPPID_Y, serial="102"), BAT1=bat())
-        self.assertIn("BAT0", self.s["pending"])            # first sample: still asking
+        self.assertEqual(self.s["pending"], {})             # first sample: held back, not asked
         tick(self.s, 600, BAT0=bat(eppid=EPPID_Y, serial="102"), BAT1=bat())
         self.assertEqual(registry.open_tenure(self.s, "BAT0")["pack"], "Bravo")
         self.assertEqual(registry.open_tenure(self.s, "BAT1")["pack"], "Alpha")
@@ -118,21 +125,30 @@ class LearnAndIdentify(unittest.TestCase):
         kinds = [e["detail"] for e in self.s["events"]]
         self.assertTrue(any("occupancy change (identity)" in d for d in kinds), kinds)
 
+    def ticks_until_asked(self, slot, ts, **bats):
+        for i in range(registry.DEFER_SAMPLES + 2):
+            tick(self.s, ts + 120 * i, **bats)
+            if slot in self.s["pending"]:
+                return i + 1
+        return None
+
     def test_an_unknown_pack_is_asked_about(self):
+        # No model name, so the ePPID cannot be checked against the pack's
+        # own part number: asked, once the held-back window runs out.
         registry.note_absent(self.s, "BAT1", 240.0)
-        tick(self.s, 360, BAT0=bat(), BAT1=bat(eppid=EPPID_Z, serial="103"))
-        tick(self.s, 480, BAT0=bat(), BAT1=bat(eppid=EPPID_Z, serial="103"))
-        self.assertIn("BAT1", self.s["pending"])
+        n = self.ticks_until_asked("BAT1", 360, BAT0=bat(), BAT1=bat(eppid=EPPID_Z, serial="103"))
+        self.assertEqual(n, registry.DEFER_SAMPLES + 1)
         registry.assign(self.s, "BAT1", "Charlie", new=True)
-        tick(self.s, 600, BAT0=bat(), BAT1=bat(eppid=EPPID_Z, serial="103"))
+        tick(self.s, 2000, BAT0=bat(), BAT1=bat(eppid=EPPID_Z, serial="103"))
         self.assertEqual(self.fp("Charlie"), EPPID_Z)
 
     def test_retired_pack_is_not_auto_identified(self):
         registry.note_absent(self.s, "BAT1", 240.0)
         registry.retire_pack(self.s, "Bravo")
-        tick(self.s, 360, BAT0=bat(), BAT1=bat(eppid=EPPID_Y, serial="102"))
-        tick(self.s, 480, BAT0=bat(), BAT1=bat(eppid=EPPID_Y, serial="102"))
-        self.assertIn("BAT1", self.s["pending"])
+        self.assertIsNotNone(self.ticks_until_asked(
+            "BAT1", 360, BAT0=bat(), BAT1=bat(eppid=EPPID_Y, serial="102", model=MODEL)))
+        self.assertIsNone(registry.open_tenure(self.s, "BAT1")["pack"])
+        self.assertNotIn("Charlie", self.s["packs"])     # never re-registered under a new name
 
     def test_hand_label_contradicting_the_pack_forgets_the_fingerprint(self):
         registry.swap(self.s)
@@ -158,8 +174,7 @@ class LearnAndIdentify(unittest.TestCase):
         # Measured 2026-09-26: Charlie went in at 27% where Bravo left at 28%;
         # the charge-based guess said "same" while the fingerprint said no.
         near = dict(eppid=EPPID_Z, serial="103", charge=2250000, capacity=48)
-        tick(self.s, 240, BAT0=bat(), BAT1=bat(**near))
-        tick(self.s, 360, BAT0=bat(), BAT1=bat(**near))
+        self.assertIsNotNone(self.ticks_until_asked("BAT1", 240, BAT0=bat(), BAT1=bat(**near)))
         self.assertEqual(self.s["pending"]["BAT1"]["reason"], "identity")
         self.assertEqual(self.s["pending"]["BAT1"]["guess"], "different")
 
@@ -215,6 +230,66 @@ class LearnAndIdentify(unittest.TestCase):
         self.assertEqual(self.fp("Alpha"), EPPID_X)
         self.assertEqual(registry.open_tenure(self.s, "BAT0")["pack"], "Alpha")
         self.assertEqual(self.s["pending"], {})
+
+
+class AutoRegister(unittest.TestCase):
+    """A genuine pack never seen before is named and registered from its own
+    ePPID, without asking; anything the tool cannot vouch for is asked."""
+
+    def setUp(self):
+        self.s = st.new_state()
+        tick(self.s, 0, BAT0=bat(model=MODEL))
+        registry.assign(self.s, "BAT0", "Alpha", new=True)
+        tick(self.s, 120, BAT0=bat(model=MODEL))
+
+    def insert(self, **kw):
+        for i in range(registry.DEFER_SAMPLES + 2):
+            tick(self.s, 240 + 120 * i, BAT0=bat(model=MODEL), BAT1=bat(**kw))
+
+    def test_plausibility(self):
+        self.assertTrue(registry.plausible_dell_eppid(GENUINE, MODEL))
+        self.assertFalse(registry.plausible_dell_eppid(CLONE, "DELL NY5PG"))
+        self.assertFalse(registry.plausible_dell_eppid(GENUINE, "DELL NY5PG"))   # another pack's part
+        self.assertFalse(registry.plausible_dell_eppid(GENUINE, None))
+        self.assertFalse(registry.plausible_dell_eppid("CN0XX", MODEL))
+
+    def test_a_new_genuine_pack_is_named_without_asking(self):
+        tick(self.s, 240, BAT0=bat(model=MODEL), BAT1=bat(eppid=GENUINE, model=MODEL))
+        self.assertEqual(self.s["pending"], {})            # held back on the first sample
+        tick(self.s, 360, BAT0=bat(model=MODEL), BAT1=bat(eppid=GENUINE, model=MODEL))
+        self.assertEqual(registry.open_tenure(self.s, "BAT1")["pack"], "Bravo")
+        self.assertEqual(self.s["packs"]["Bravo"]["fingerprint"], GENUINE)
+        self.assertEqual(self.s["pending"], {})
+        self.assertTrue(any("pack rename Bravo" in e["detail"] for e in self.s["events"]))
+
+    def test_names_skip_any_name_in_use_including_retired(self):
+        tick(self.s, 240, BAT0=bat(model=MODEL))
+        registry.note_absent(self.s, "BAT1", 200.0)
+        self.s["packs"]["Bravo"] = dict(self.s["packs"]["Alpha"], label="Bravo", retired=True, fingerprint=None)
+        self.insert(eppid=GENUINE, model=MODEL)
+        self.assertEqual(registry.open_tenure(self.s, "BAT1")["pack"], "Charlie")
+
+    def test_a_clone_is_asked_about(self):
+        self.insert(eppid=CLONE, model="DELL NY5PG")
+        self.assertIn("BAT1", self.s["pending"])
+        self.assertEqual(len(self.s["packs"]), 1)
+
+    def test_a_pack_without_eppid_is_asked_at_once(self):
+        tick(self.s, 240, BAT0=bat(model=MODEL), BAT1=bat(eppid=None, model=MODEL))
+        self.assertIn("BAT1", self.s["pending"])
+
+    def test_a_wrong_automatic_name_is_fixed_by_hand(self):
+        self.insert(eppid=GENUINE, model=MODEL)
+        registry.rename_pack(self.s, "Bravo", "Delta")
+        self.assertEqual(registry.open_tenure(self.s, "BAT1")["pack"], "Delta")
+        self.assertEqual(self.s["packs"]["Delta"]["fingerprint"], GENUINE)
+
+    def test_a_known_pack_is_never_registered_twice(self):
+        registry.note_absent(self.s, "BAT0", 200.0)
+        for i in range(4):
+            tick(self.s, 240 + 120 * i, BAT1=bat(model=MODEL))          # Alpha moved to BAT1
+        self.assertEqual(registry.open_tenure(self.s, "BAT1")["pack"], "Alpha")
+        self.assertEqual(sorted(self.s["packs"]), ["Alpha"])
 
 
 class Clones(unittest.TestCase):
@@ -297,8 +372,8 @@ class Clones(unittest.TestCase):
         tick(s, 120, BAT0=bat())
         self.assertIsNone(s["packs"]["A"]["fingerprint"])
         registry.note_absent(s, "BAT0", 200.0)
-        tick(s, 240, BAT0=bat())
-        tick(s, 360, BAT0=bat())
+        for i in range(registry.DEFER_SAMPLES + 1):
+            tick(s, 240 + 120 * i, BAT0=bat())
         self.assertIn("BAT0", s["pending"])                  # asked, never assumed
 
     def test_forget_relearns(self):
