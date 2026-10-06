@@ -21,7 +21,7 @@ SYSMAN = SYSFS_ROOT / "class/firmware-attributes/dell-wmi-sysman"
 BATS = ("BAT0", "BAT1")
 # Written by libexec/dell-battery-balance-cycles (root) from Dell's DDV WMI
 # cycle-count call, when the admin enabled it; "BAT0 2" per line.
-DDV_CYCLES = Path(os.environ.get("DBB_CYCLES_FILE", "/run/dell-battery-balance-cycles/cycles"))
+DDV_CYCLES = None   # resolved per read by _ddv_cycles_path(); tests may set a Path
 DDV_CYCLES_MAX_AGE_S = 600
 
 # Slot -> the dell-wmi-sysman attribute names that control it.
@@ -67,14 +67,28 @@ def boot_id():
 # measurement
 # --------------------------------------------------------------------------
 
+def _ddv_cycles_path():
+    """Resolved at read time, like the env overrides around it. Under a fake
+    /sys (DBB_SYSFS_ROOT) the real /run file is never read: a test on a
+    machine with the helper enabled would otherwise see that machine's packs."""
+    if DDV_CYCLES is not None:
+        return DDV_CYCLES
+    if os.environ.get("DBB_CYCLES_FILE"):
+        return Path(os.environ["DBB_CYCLES_FILE"])
+    if os.environ.get("DBB_SYSFS_ROOT"):
+        return Path(os.environ["DBB_SYSFS_ROOT"]) / "dbb-test-no-ddv-cycles"
+    return Path("/run/dell-battery-balance-cycles/cycles")
+
+
 def ddv_cycles(now=None):
     """Each slot's cycle count as the pack reported it through DDV WMI, or {}
     when the helper is off or its file is stale."""
+    path = _ddv_cycles_path()
     try:
-        st = DDV_CYCLES.stat()
+        st = path.stat()
         if (now or time.time()) - st.st_mtime > DDV_CYCLES_MAX_AGE_S:
             return {}
-        text = DDV_CYCLES.read_text()[:256]
+        text = path.read_text()[:256]
     except OSError:
         return {}
     out = {}
@@ -113,6 +127,7 @@ def sample_all():
             # dell-wmi-ddv. Kept out of the sample log (CSV_FIELDS).
             "eppid": read_str(d / "eppid"),
             "serial": read_str(d / "serial_number"),
+            "model": read_str(d / "model_name"),
             # The pack's own counter. The kernel's cycle_count is a
             # placeholder 0 where the battery only implements ACPI _BIF (the
             # 5430 Rugged); the DDV WMI reading, when enabled, is the pack's.

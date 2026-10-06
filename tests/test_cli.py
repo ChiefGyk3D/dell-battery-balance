@@ -861,7 +861,7 @@ class PackIdentity(CliBase):
         self.ident("BAT0", self.EPPIDS["BAT1"], "102")
         self.ident("BAT1", self.EPPIDS["BAT0"], "101")
         self.run_cli("tick")
-        self.assertEqual(sorted(self.status()["pending"]), ["BAT0", "BAT1"])
+        self.assertEqual(self.status()["pending"], {})   # held back while the ePPIDs confirm
         self.run_cli("tick")
         j = self.status()
         self.assertEqual(j["pending"], {})

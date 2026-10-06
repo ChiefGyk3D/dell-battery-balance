@@ -162,6 +162,14 @@ class Sampler(unittest.TestCase):
         self.file.write_text("BAT0 -1\nBAT9 4\nBAT1 x\nBAT1 3 extra\n")
         self.assertEqual(sysfs.ddv_cycles(), {})
 
+    def test_a_fake_sys_never_reads_the_real_run_file(self):
+        # Found 2026-10-05: with the helper enabled on the laptop, the CLI
+        # tests read the real packs' counts through /run.
+        with mock.patch.object(sysfs, "DDV_CYCLES", None), \
+                mock.patch.dict(os.environ, {"DBB_SYSFS_ROOT": self.tmp.name}):
+            os.environ.pop("DBB_CYCLES_FILE", None)
+            self.assertTrue(str(sysfs._ddv_cycles_path()).startswith(self.tmp.name))
+
     def test_cycle_source_never_reaches_the_sample_log(self):
         self.assertNotIn("cycle_source", st.CSV_FIELDS)
 

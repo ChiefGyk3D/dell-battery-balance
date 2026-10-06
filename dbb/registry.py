@@ -35,6 +35,14 @@ BENCH_WARN_SOC = 70
 
 EPPID_MIN_LEN = 10
 CONFIRM_SAMPLES = 2   # consecutive agreeing samples before a reading counts
+# While a newly inserted pack's ePPID is being confirmed, its question is held
+# back; it is asked only if the pack is still unnamed after this many samples.
+DEFER_SAMPLES = 3
+# Names given to genuine packs registered without asking, in order.
+AUTO_NAMES = ("Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel",
+              "India", "Juliett", "Kilo", "Lima", "Mike", "November", "Oscar", "Papa",
+              "Quebec", "Romeo", "Sierra", "Tango", "Uniform", "Victor", "Whiskey",
+              "Xray", "Yankee", "Zulu")
 # Consecutive twin samples before the packs are judged clones. Real clones
 # twin on every sample; BAT1 mirroring BAT0 lasted two samples on 2026-09-29
 # and again on 2026-10-02, and at two that condemned three genuine packs.
@@ -181,11 +189,17 @@ def observe(state, slot, v, s, dt, fp=None):
         if (t["design_uah"] and prev and prev.get("last_charge_uah") is not None
                 and v.get("charge_now_uah") is not None):
             delta = (v["charge_now_uah"] - prev["last_charge_uah"]) / t["design_uah"] * 100.0
-        state.setdefault("pending", {})[slot] = {
+        question = {
             "tenure_id": t["id"], "guess": g, "reason": reason,
             "previous_pack": prev["pack"] if prev else None,
             "delta_pct": delta, "opened_ts": now_iso(),
         }
+        if _reads_identity(state, slot):
+            # The pack reports an ePPID: name it from that once it is
+            # confirmed, and ask only if that fails (_ask_deferred).
+            t["deferred_question"] = question
+        else:
+            state.setdefault("pending", {})[slot] = question
         add_event(state, "pack", f"{slot}: occupancy change ({reason}), guess={g}, tenure {t['id']}")
         changed = True
     else:
@@ -256,8 +270,10 @@ def assign(state, slot, name, new=False, now=None, bench_temp_c=25.0, how=None):
         t["calendar_score"] += bench_hours * calendar_stress(p["removed_at_soc"], bench_temp_c)
     p["removed_at_soc"], p["removed_ts"] = None, None
     state.get("pending", {}).pop(slot, None)
+    t.pop("deferred_question", None)
     add_event(state, "pack", f"{slot}: tenure {t['id']} identified as {name}"
-              + (" (identity read from the pack)" if how == "identity" else ""))
+              + {"identity": " (identity read from the pack)",
+                 "new": " (a new pack, named automatically)"}.get(how, ""))
     _hand_label(state, slot, name)
     return t
 
@@ -414,9 +430,50 @@ def read_identities(state, s):
             out[b] = None
             continue
         n = prev.get("n", 0) + 1 if prev.get("fp") == fp else 1
-        ident["slots"][b] = {"fp": fp, "n": n}
+        ident["slots"][b] = {"fp": fp, "n": n, "model": (s["bats"].get(b) or {}).get("model")}
         out[b] = fp if n >= CONFIRM_SAMPLES else None
     return out
+
+
+def _reads_identity(state, slot):
+    ident = state.get("identity") or {}
+    return bool((ident.get("slots") or {}).get(slot)) and not ident.get("twin_samples")
+
+
+def plausible_dell_eppid(fp, model):
+    """True when the ePPID carries the pack's own Dell part number: genuine
+    DRPTT67 packs read CN0DRPTT... beside model "DELL DRPTT67"; the clone pair
+    read CCDELLPN... beside "DELL NY5PG". Only such a pack is registered
+    without asking."""
+    if not fp or not model or len(fp) < 20 or fp[2] != "0":
+        return False
+    part = fp[3:8]
+    return part.isalnum() and part in model.replace(" ", "").upper()
+
+
+def _auto_name(state):
+    for n in AUTO_NAMES:
+        if n not in state["packs"]:
+            return n
+    i = len(state["packs"]) + 1
+    while f"Pack{i}" in state["packs"]:
+        i += 1
+    return f"Pack{i}"
+
+
+def _ask_deferred(state):
+    """Raise a held-back question when the pack is still unnamed: it stopped
+    reporting an ePPID, clones met, or DEFER_SAMPLES passed without a match."""
+    for b in BATS:
+        t = open_tenure(state, b)
+        if t is None or not t.get("deferred_question"):
+            continue
+        if t["pack"]:
+            t.pop("deferred_question")
+            continue
+        if _reads_identity(state, b) and t.get("samples", 0) < DEFER_SAMPLES:
+            continue
+        state.setdefault("pending", {})[b] = t.pop("deferred_question")
 
 
 def _unconfirmed_other(state, slot, known):
@@ -486,6 +543,13 @@ def resolve_identities(state, ids, bench_temp_c=25.0):
             owner = _owner(state, fp)
             if owner and owner not in packs_in_slots(state):
                 assign(state, b, owner, bench_temp_c=bench_temp_c, how="identity")
+            elif (not any(p.get("fingerprint") == fp for p in state["packs"].values())
+                  and plausible_dell_eppid(fp, ident["slots"][b].get("model"))):
+                name = _auto_name(state)
+                assign(state, b, name, new=True, bench_temp_c=bench_temp_c, how="new")
+                state["packs"][name]["fingerprint"] = fp
+                add_event(state, "pack", f"{name}: new pack registered from its ePPID; "
+                          f"rename it with 'pack rename {name} <name>'")
             continue
         p = state["packs"][t["pack"]]
         if p.get("identity_unreadable") or p.get("fingerprint"):

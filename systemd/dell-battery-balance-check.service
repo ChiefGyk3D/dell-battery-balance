@@ -1,0 +1,33 @@
+[Unit]
+Description=Dell dual-battery balance: read the packs now (a pack went in or out)
+Documentation=https://github.com/ChiefGyk3D/dell-battery-balance
+ConditionPathExists=/sys/class/power_supply/BAT0
+
+# Started by udev (90-dell-battery-balance.rules) on any event on BAT0/BAT1.
+# Two readings 15 s apart, as `dell-battery-balance check`: one reading is
+# never trusted for identity. A start while it runs joins the running job, so
+# a burst of events (insertion settles over ~3 s; AC plug touches both packs)
+# costs one check. The timer's tick still runs every 2 minutes regardless.
+[Service]
+Type=oneshot
+User=dell-battery-balance
+Group=dell-battery-balance
+ExecStartPre=+/usr/local/libexec/dell-battery-balance-grant
+ExecStartPre=+/usr/local/libexec/dell-battery-balance-cycles
+ExecStart=/usr/local/bin/dell-battery-balance check
+Nice=10
+IOSchedulingClass=idle
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dell-battery-balance /etc/dell-battery-balance
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+# Deliberately NOT ProtectKernelTunables: it would remount /sys read-only.

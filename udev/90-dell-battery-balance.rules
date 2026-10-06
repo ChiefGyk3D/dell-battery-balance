@@ -1,2 +1,6 @@
 SUBSYSTEM=="firmware-attributes", KERNEL=="dell-wmi-sysman", ACTION=="add", RUN+="/usr/local/libexec/dell-battery-balance-grant"
 SUBSYSTEM=="power_supply", KERNEL=="BAT0", ACTION=="add", RUN+="/usr/local/libexec/dell-battery-balance-grant"
+# A pack went in or out (measured on the 5430 Rugged: pulling the slice pack
+# is a "remove" on BAT1, inserting one a "change" with PRESENT=1): read the
+# packs now instead of waiting up to 2 minutes for the timer.
+SUBSYSTEM=="power_supply", KERNEL=="BAT[01]", ACTION=="add|remove|change", RUN+="/usr/bin/systemctl --no-block start dell-battery-balance-check.service"
