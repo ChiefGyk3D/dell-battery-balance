@@ -18,7 +18,8 @@ if [[ -n "${SUDO_USER:-}" ]] && command -v kpackagetool6 >/dev/null; then
         --remove com.chiefgyk3d.dellbatterybalance 2>/dev/null || true
 fi
 
-rm -f /etc/systemd/system/$SVC.service /etc/systemd/system/$SVC.timer
+systemctl stop "$SVC-check.service" 2>/dev/null || true
+rm -f /etc/systemd/system/$SVC.service /etc/systemd/system/$SVC.timer /etc/systemd/system/$SVC-check.service
 rm -f /etc/udev/rules.d/90-$SVC.rules
 # acpi_call stays installed and loaded until reboot (other tools may use it);
 # only the boot-time load this tool added is removed.

@@ -259,6 +259,16 @@ the ePPID comes through Dell's WMI interface and has not. (0.5.0 to 0.6.0
 used ePPID plus serial; 0.6.1 converts stored fingerprints on its first
 tick.)
 
+- **A pack going in or out is read at once**, not on the next 2-minute
+  tick. udev starts `dell-battery-balance-check.service` (the `check`
+  command: two readings 15 s apart) on any event on BAT0 or BAT1. Measured
+  on the 5430 Rugged 2026-10-05: pulling the slice pack is a `remove` on
+  BAT1, inserting one a `change` with `PRESENT=1` followed by status
+  updates over about 3 seconds, a quiet minute brings no events, and AC
+  plug or unplug brings one `change` on each pack. A start while a check
+  runs joins it, so a burst costs one check. A known pack is labelled
+  about 15 s after it goes in; the applet shows it on its next poll
+  (30 s by default, settable down to 10 s).
 - **You are asked only when the tool cannot tell.** When a pack is
   inserted, or a swap is detected, and the pack reports an ePPID, the
   question is held back while the reading confirms (two samples). Then:
@@ -469,7 +479,8 @@ sudo ./install.sh
 This creates the scoped `dell-battery-balance` system account, installs the
 package to `/usr/local/lib/dell-battery-balance`, the launcher, the two
 privilege wrappers and the grant script to `/usr/local/libexec`, the udev
-rule and both polkit actions, and the systemd unit + timer — then enables
+rule and both polkit actions, the systemd unit + timer, and the hotplug check
+unit that udev starts when a pack goes in or out — then enables
 `dell-battery-balance.timer` immediately (tick every 2 minutes; ticks sample
 unconditionally and apply the resolved profile's bands whenever
 `general.auto_balance` is true, which is the default).
@@ -1025,11 +1036,11 @@ Nothing is queued; new work starts from an issue.
 python3 -m unittest discover -s tests -v
 ```
 
-409 tests across fifteen files (`test_wear_model.py`, `test_policy.py`,
+414 tests across sixteen files (`test_wear_model.py`, `test_policy.py`,
 `test_config.py`, `test_apply.py`, `test_registry.py`, `test_identity.py`, `test_cycles.py`, `test_cli.py`,
 `test_state.py`, `test_cli_surface.py`, `test_applet_package.py`,
 `test_metrics.py`, `test_overnight.py`, `test_wake_helper.py`,
-`test_ddv_cycles.py`), all against
+`test_ddv_cycles.py`, `test_hotplug.py`), all against
 a fake `/sys` tree and temp state/config dirs (`DBB_SYSFS_ROOT`,
 `DBB_STATE_DIR`, `DBB_CONFIG_DIR`) — never real hardware or files. Coverage
 includes: three full sequential-discharge cycles, asserting the pack doing

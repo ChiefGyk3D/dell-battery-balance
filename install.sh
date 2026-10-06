@@ -61,6 +61,7 @@ install -Dm644 "$src/plasmoid/notifyrc/dell_battery_balance.notifyrc" /usr/share
 install -Dm644 "$src/udev/90-dell-battery-balance.rules" /etc/udev/rules.d/90-dell-battery-balance.rules
 install -Dm644 "$src/systemd/dell-battery-balance.service" /etc/systemd/system/dell-battery-balance.service
 install -Dm644 "$src/systemd/dell-battery-balance.timer"   /etc/systemd/system/dell-battery-balance.timer
+install -Dm644 "$src/systemd/dell-battery-balance-check.service" /etc/systemd/system/dell-battery-balance-check.service
 
 # Firmware cycle count. Where the batteries implement ACPI _BIF rather than
 # _BIX (the Latitude 5430 Rugged), the kernel's cycle_count is a placeholder
