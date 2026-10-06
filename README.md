@@ -276,11 +276,17 @@ tick.)
   the applet hides its "Same" button, since the pack itself has said it is
   not the previous one. A new tenure opens and is labelled from the
   fingerprint.
-- **Two packs reporting the same identity** are never trusted. If both
-  slots read the same fingerprint for two samples in a row, both packs are
-  marked `id unreadable`, a warning event names the counterfeit and
-  third-party pattern, and from then on those packs are asked about, never
-  recognised.
+- **Two packs reporting the same identity** are never trusted. A sample in
+  which both slots read the same fingerprint never identifies either pack.
+  If that lasts for 15 samples in a row (30 minutes), both packs are marked
+  `id unreadable`, a warning event names the counterfeit and third-party
+  pattern, and from then on those packs are asked about, never recognised.
+  Real clones twin on every sample, so the wait costs nothing. It used to
+  be two samples, and BAT1 mirroring BAT0's ePPID for two samples (measured
+  2026-09-29 and 2026-10-02) condemned three genuine packs; 0.7.1 reads
+  those packs again on its first run. Twin samples also never condemn a
+  pack when either pack in the machine is already known by a different
+  fingerprint: that proves a slot is being misread, not that clones met.
 - Labelling a pack by hand (`assign`, `reassign`, `swap`) against what the
   slot reports is allowed; you win, and that pack's fingerprint is forgotten
   and relearned under the new label.
@@ -847,8 +853,8 @@ Nothing is queued; new work starts from an issue.
   capacity, charge picked back up close to where it left off) can still be
   missed; `pack reassign` fixes a tenure that was mislabeled this way.
 - **Clones that never meet cannot be told apart.** Two packs sharing one
-  identity are caught only when both sit in the machine together for two
-  samples. Mark a known clone with `pack identity <name> unreadable`.
+  identity are caught only when both sit in the machine together for 15
+  samples (30 minutes). Mark a known clone with `pack identity <name> unreadable`.
 - **Identity needs `dell-wmi-ddv`.** Without that module there is no
   `eppid` file, and every pack is asked about.
 - **A swap across a shutdown or long suspend can be undetectable.** The
@@ -924,7 +930,7 @@ Nothing is queued; new work starts from an issue.
 python3 -m unittest discover -s tests -v
 ```
 
-380 tests across fourteen files (`test_wear_model.py`, `test_policy.py`,
+383 tests across fourteen files (`test_wear_model.py`, `test_policy.py`,
 `test_config.py`, `test_apply.py`, `test_registry.py`, `test_identity.py`, `test_cycles.py`, `test_cli.py`,
 `test_state.py`, `test_cli_surface.py`, `test_applet_package.py`,
 `test_metrics.py`, `test_overnight.py`, `test_wake_helper.py`), all against

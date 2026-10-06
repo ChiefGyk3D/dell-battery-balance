@@ -229,12 +229,65 @@ class Clones(unittest.TestCase):
         self.assertEqual(s["packs"]["A"]["fingerprint"], EPPID_X)
         tick(s, 240, BAT0=bat(), BAT1=bat())             # its twin arrives
         registry.assign(s, "BAT1", "B", new=True)
-        tick(s, 360, BAT0=bat(), BAT1=bat())
+        for i in range(2, registry.TWIN_SAMPLES):
+            tick(s, 240 + 120 * i, BAT0=bat(), BAT1=bat())
+        self.assertFalse(s["packs"]["A"].get("identity_unreadable"))
+        tick(s, 240 + 120 * registry.TWIN_SAMPLES, BAT0=bat(), BAT1=bat())
         for name in ("A", "B"):
             self.assertIsNone(s["packs"][name]["fingerprint"], name)
             self.assertTrue(s["packs"][name]["identity_unreadable"], name)
         warn = [e["detail"] for e in s["events"] if e["kind"] == "warning"]
         self.assertTrue(any("counterfeit" in w for w in warn), warn)
+
+    def test_mirrored_samples_never_condemn_packs_known_apart(self):
+        # Measured 2026-09-29 and 2026-10-02: BAT1 read BAT0's ePPID for two
+        # samples, and at the old two-sample rule three genuine packs were
+        # marked clones. Packs already learned as different are being misread.
+        s = st.new_state()
+        tick(s, 0, BAT0=bat(), BAT1=bat(eppid=EPPID_Y))
+        registry.assign(s, "BAT0", "Alpha", new=True)
+        registry.assign(s, "BAT1", "Bravo", new=True)
+        tick(s, 120, BAT0=bat(), BAT1=bat(eppid=EPPID_Y))
+        for i in range(2, 2 + 2 * registry.TWIN_SAMPLES):
+            tick(s, 120 * i, BAT0=bat(), BAT1=bat())
+        for name, fp in (("Alpha", EPPID_X), ("Bravo", EPPID_Y)):
+            self.assertFalse(s["packs"][name]["identity_unreadable"], name)
+            self.assertEqual(s["packs"][name]["fingerprint"], fp, name)
+        self.assertFalse([e for e in s["events"] if e["kind"] == "warning"])
+
+    def test_a_short_twin_streak_condemns_nobody(self):
+        s = st.new_state()
+        tick(s, 0, BAT0=bat())
+        registry.assign(s, "BAT0", "Alpha", new=True)
+        tick(s, 120, BAT0=bat())
+        tick(s, 240, BAT0=bat(), BAT1=bat())             # new pack, mirrored
+        registry.assign(s, "BAT1", "Charlie", new=True)
+        tick(s, 360, BAT0=bat(), BAT1=bat())
+        tick(s, 480, BAT0=bat(), BAT1=bat(eppid=EPPID_Z))
+        tick(s, 600, BAT0=bat(), BAT1=bat(eppid=EPPID_Z))
+        self.assertFalse(s["packs"]["Charlie"]["identity_unreadable"])
+        self.assertEqual(s["packs"]["Charlie"]["fingerprint"], EPPID_Z)
+        self.assertEqual(s["packs"]["Alpha"]["fingerprint"], EPPID_X)
+
+    def test_packs_the_old_rule_condemned_are_read_again(self):
+        s = st.new_state()
+        tick(s, 0, BAT0=bat(), BAT1=bat(eppid=EPPID_Y))
+        registry.assign(s, "BAT0", "Alpha", new=True)
+        registry.assign(s, "BAT1", "Bravo", new=True)
+        registry.set_identity(s, "Bravo", "unreadable")         # by hand: stays
+        # What 0.7.0 left behind for Alpha: the twin warning and the mark.
+        s["packs"]["Alpha"].update(fingerprint=None, identity_unreadable=True)
+        registry.add_event(s, "warning", "Alpha reports the same identity (ePPID and serial) "
+                           "as another pack, which is what counterfeit packs do")
+        del s["packs"]["Bravo"]["identity_unreadable_by"]
+        del s["identity"]["twin_by_source"]
+        tick(s, 120, BAT0=bat(), BAT1=bat(eppid=EPPID_Y))
+        tick(s, 240, BAT0=bat(), BAT1=bat(eppid=EPPID_Y))
+        self.assertFalse(s["packs"]["Alpha"]["identity_unreadable"])
+        self.assertEqual(s["packs"]["Alpha"]["fingerprint"], EPPID_X)
+        self.assertTrue(s["packs"]["Bravo"]["identity_unreadable"])
+        self.assertEqual(s["packs"]["Bravo"]["identity_unreadable_by"], "hand")
+        self.assertIsNone(s["packs"]["Bravo"]["fingerprint"])
 
     def test_unreadable_pack_never_learns_or_claims(self):
         s = st.new_state()

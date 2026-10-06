@@ -35,6 +35,11 @@ BENCH_WARN_SOC = 70
 
 EPPID_MIN_LEN = 10
 CONFIRM_SAMPLES = 2   # consecutive agreeing samples before a reading counts
+# Consecutive twin samples before the packs are judged clones. Real clones
+# twin on every sample; BAT1 mirroring BAT0 lasted two samples on 2026-09-29
+# and again on 2026-10-02, and at two that condemned three genuine packs.
+TWIN_SAMPLES = 15
+TWIN_WARNING = "reports the same identity"
 
 
 class RegistryError(ValueError):
@@ -363,7 +368,31 @@ def _ident(state):
             if rec and rec.get("fp"):
                 rec["fp"] = rec["fp"].split("/", 1)[0]
         ident["eppid_only"] = True
+    if not ident.get("twin_by_source"):
+        _restore_glitch_condemned(state)
+        ident["twin_by_source"] = True
     return ident
+
+
+def _restore_glitch_condemned(state):
+    """0.5.0-0.7.0 marked packs unreadable after two twin samples, which a
+    BAT1 mirror glitch produces. Record who set each mark; give packs the
+    twin rule condemned, and that were never marked by hand, a fresh read."""
+    hand = {e["detail"].split(":", 1)[0] for e in state.get("events", [])
+            if e.get("kind") == "pack" and e.get("detail", "").endswith(": identity marked unreadable")}
+    twin = {e["detail"].split(" ", 1)[0] for e in state.get("events", [])
+            if e.get("kind") == "warning" and TWIN_WARNING in e.get("detail", "")}
+    for name, p in state.get("packs", {}).items():
+        if not p.get("identity_unreadable") or p.get("identity_unreadable_by"):
+            continue
+        if name in twin and name not in hand and not p.get("retired"):
+            p["identity_unreadable"] = False
+            add_event(state, "pack", f"{name}: identity read again; it was marked unreadable "
+                      "after two mirrored samples, not because it shares an identity")
+        else:
+            # Only two things set the mark; packs renamed since have no
+            # hand event under their current name, but no twin warning either.
+            p["identity_unreadable_by"] = "twin" if name in twin and name not in hand else "hand"
 
 
 def read_identities(state, s):
@@ -375,6 +404,7 @@ def read_identities(state, s):
     raw = {b: fingerprint(v) for b, v in s["bats"].items() if v and v.get("present", 1) == 1}
     twins = len(raw) == 2 and None not in raw.values() and len(set(raw.values())) == 1
     ident["twin_samples"] = ident.get("twin_samples", 0) + 1 if twins else 0
+    ident["twin_fp"] = raw["BAT0"] if twins else None
     out = {}
     for b in BATS:
         fp = None if twins else raw.get(b)
@@ -416,9 +446,9 @@ def _mark_unreadable(state, name):
     p["fingerprint"] = None
     if p.get("identity_unreadable"):
         return
-    p["identity_unreadable"] = True
+    p["identity_unreadable"], p["identity_unreadable_by"] = True, "twin"
     add_event(state, "warning",
-              f"{name} reports the same identity (ePPID and serial) as another pack, "
+              f"{name} {TWIN_WARNING} (ePPID) as another pack, "
               "which is what counterfeit and third-party packs do; it will be asked "
               "about, not read. Buy Dell OEM packs through authorized channels")
 
@@ -438,11 +468,15 @@ def resolve_identities(state, ids, bench_temp_c=25.0):
     """After a sample: label unidentified tenures whose confirmed fingerprint
     belongs to exactly one known pack, learn the fingerprint of labelled
     packs that have none, and give up on packs that turn out to share one."""
-    if _ident(state).get("twin_samples", 0) >= CONFIRM_SAMPLES:
-        for b in BATS:
-            t = open_tenure(state, b)
-            if t and t["pack"]:
-                _mark_unreadable(state, t["pack"])
+    ident = _ident(state)
+    if ident.get("twin_samples", 0) >= CONFIRM_SAMPLES:
+        if ident["twin_samples"] >= TWIN_SAMPLES:
+            names = [t["pack"] for t in (open_tenure(state, b) for b in BATS) if t and t["pack"]]
+            # A pack already known by another fingerprint proves a slot is
+            # being misread (BAT1 mirroring BAT0), not that clones met.
+            if all(state["packs"][n].get("fingerprint") in (None, ident.get("twin_fp")) for n in names):
+                for n in names:
+                    _mark_unreadable(state, n)
         return
     for b in BATS:
         fp, t = ids.get(b), open_tenure(state, b)
@@ -516,6 +550,7 @@ def set_identity(state, name, action):
     p = state["packs"][name]
     p["fingerprint"] = None
     p["identity_unreadable"] = action == "unreadable"
+    p["identity_unreadable_by"] = "hand" if action == "unreadable" else None
     add_event(state, "pack", f"{name}: identity "
               + ("marked unreadable" if action == "unreadable" else "forgotten, will be relearned"))
 
