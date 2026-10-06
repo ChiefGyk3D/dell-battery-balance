@@ -8,6 +8,7 @@ Type=oneshot
 User=dell-battery-balance
 Group=dell-battery-balance
 ExecStartPre=+/usr/local/libexec/dell-battery-balance-grant
+ExecStartPre=+/usr/local/libexec/dell-battery-balance-cycles
 ExecStart=/usr/local/bin/dell-battery-balance tick
 ExecStartPost=+/usr/local/libexec/dell-battery-balance-wake
 Nice=10

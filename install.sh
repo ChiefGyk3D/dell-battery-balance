@@ -4,6 +4,12 @@ set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "run as root: sudo ./install.sh" >&2; exit 1; }
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SVC=dell-battery-balance
+ddv_cycles=0
+case "${1:-}" in
+    "") ;;
+    --ddv-cycles) ddv_cycles=1 ;;
+    *) echo "usage: sudo ./install.sh [--ddv-cycles]" >&2; exit 2 ;;
+esac
 
 # Python 3.13 or newer is required (argparse "--" handling; see README).
 python3 -c 'import sys; sys.exit(sys.version_info < (3, 13))' || {
@@ -34,6 +40,7 @@ chmod -R a+rX /usr/local/lib/$SVC
 install -Dm755 "$src/dell-battery-balance" /usr/local/bin/dell-battery-balance
 install -Dm755 "$src/libexec/dell-battery-balance-grant" /usr/local/libexec/dell-battery-balance-grant
 install -Dm755 "$src/libexec/dell-battery-balance-wake"  /usr/local/libexec/dell-battery-balance-wake
+install -Dm755 "$src/libexec/dell-battery-balance-cycles" /usr/local/libexec/dell-battery-balance-cycles
 install -Dm755 "$src/libexec/dbb-control"   /usr/local/libexec/dbb-control
 install -Dm755 "$src/libexec/dbb-configure" /usr/local/libexec/dbb-configure
 install -Dm644 "$src/README.md" /usr/local/share/doc/$SVC/README.md
@@ -54,6 +61,51 @@ install -Dm644 "$src/plasmoid/notifyrc/dell_battery_balance.notifyrc" /usr/share
 install -Dm644 "$src/udev/90-dell-battery-balance.rules" /etc/udev/rules.d/90-dell-battery-balance.rules
 install -Dm644 "$src/systemd/dell-battery-balance.service" /etc/systemd/system/dell-battery-balance.service
 install -Dm644 "$src/systemd/dell-battery-balance.timer"   /etc/systemd/system/dell-battery-balance.timer
+
+# Firmware cycle count. Where the batteries implement ACPI _BIF rather than
+# _BIX (the Latitude 5430 Rugged), the kernel's cycle_count is a placeholder
+# 0; Dell's DDV WMI interface has the pack's real count, readable only with
+# the acpi_call module. Report what this machine has; enable on request.
+DDV_GUID=8A42EA14-4F2A-FD45-6422-0087F7A7E608
+MODLOAD=/etc/modules-load.d/$SVC-acpi_call.conf
+echo
+echo "Firmware cycle count:"
+placeholder=1
+for b in /sys/class/power_supply/BAT*; do
+    [[ -r $b/cycle_count ]] || continue
+    c=$(<"$b/cycle_count")
+    echo "  ${b##*/}: kernel cycle_count = $c"
+    [[ $c == 0 ]] || placeholder=0
+done
+if ! compgen -G "/sys/bus/wmi/devices/$DDV_GUID*" >/dev/null; then
+    echo "  No Dell DDV WMI interface (dell-wmi-ddv); only the kernel's value is available."
+elif [[ $ddv_cycles -eq 1 ]]; then
+    if ! modinfo acpi_call >/dev/null 2>&1; then
+        if command -v apt-get >/dev/null; then
+            apt-get install -y acpi-call-dkms
+        else
+            echo "  acpi_call is not installed; install your distribution's acpi_call (DKMS) package and rerun." >&2
+        fi
+    fi
+    if modprobe acpi_call; then
+        echo acpi_call > "$MODLOAD"
+        echo "  acpi_call loaded and set to load at boot ($MODLOAD)."
+        echo "  /proc/acpi/call mode: $(stat -c %a /proc/acpi/call) (root only is expected)"
+        /usr/local/libexec/dell-battery-balance-cycles
+        if [[ -s /run/$SVC-cycles/cycles ]]; then
+            sed 's/^/  DDV WMI cycle count: /' /run/$SVC-cycles/cycles
+        else
+            echo "  DDV WMI returned no cycle count this machine's packs could be matched to; nothing will be read." >&2
+        fi
+    fi
+elif [[ -e $MODLOAD ]]; then
+    echo "  Read from the packs through Dell WMI (acpi_call, enabled earlier)."
+elif [[ $placeholder -eq 1 ]]; then
+    echo "  All 0: likely the ACPI placeholder, not the packs. Confirmed on the"
+    echo "  Latitude 5430 Rugged, where the packs' real count is readable through"
+    echo "  Dell WMI. To enable it (installs acpi-call-dkms; see README, Firmware"
+    echo "  cycle count):  sudo $src/install.sh --ddv-cycles"
+fi
 
 udevadm control --reload
 /usr/local/libexec/dell-battery-balance-grant

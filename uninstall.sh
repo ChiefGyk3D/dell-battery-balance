@@ -20,6 +20,10 @@ fi
 
 rm -f /etc/systemd/system/$SVC.service /etc/systemd/system/$SVC.timer
 rm -f /etc/udev/rules.d/90-$SVC.rules
+# acpi_call stays installed and loaded until reboot (other tools may use it);
+# only the boot-time load this tool added is removed.
+rm -f /etc/modules-load.d/$SVC-acpi_call.conf
+rm -rf /run/$SVC-cycles
 rm -f /usr/share/polkit-1/actions/com.chiefgyk3d.dellbatterybalance.control.policy \
       /usr/share/polkit-1/actions/com.chiefgyk3d.dellbatterybalance.configure.policy
 rm -f /usr/share/knotifications6/dell_battery_balance.notifyrc
@@ -34,6 +38,7 @@ rm -rf /var/lib/$SVC-wake
 
 rm -f /usr/local/libexec/dell-battery-balance-grant \
       /usr/local/libexec/dell-battery-balance-wake \
+      /usr/local/libexec/dell-battery-balance-cycles \
       /usr/local/libexec/dbb-control \
       /usr/local/libexec/dbb-configure
 rm -f /usr/local/bin/dell-battery-balance

@@ -512,18 +512,24 @@ def track_cycles(state, s, last):
         v, t = s["bats"].get(b), open_tenure(state, b)
         if not v or t is None or not t["pack"] or state.get("pending", {}).get(b):
             continue
-        n = v.get("cycle_count")
+        n, src = v.get("cycle_count"), v.get("cycle_source", "sysfs")
         prev = ((last or {}).get("bats") or {}).get(b) or {}
-        if n is None or prev.get("cycle_count") != n:
+        if n is None or prev.get("cycle_count") != n or prev.get("cycle_source", "sysfs") != src:
             continue
         p = state["packs"][t["pack"]]
         if p.get("fingerprint") and slot_identity(state, b) != p["fingerprint"]:
             continue
         e = _pack_efc(state, t["pack"])
         fw = p.get("fw_cycles")
+        if fw is not None and fw.get("source", "sysfs") != src:
+            if src == "sysfs":
+                continue        # the DDV reading went stale; never fall back to the placeholder
+            add_event(state, "cycles", f"{t['pack']}: firmware cycle count {n}, read from the pack "
+                      f"through Dell WMI (the kernel's cycle_count read {fw['value']})")
+            fw = None
         if fw is None:
             p["fw_cycles"] = {"value": n, "first_value": n, "first_ts": now_iso(),
-                              "changed_ts": None, "efc_at_first": e}
+                              "changed_ts": None, "efc_at_first": e, "source": src}
             continue
         if n == fw["value"]:
             continue
