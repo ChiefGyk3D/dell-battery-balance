@@ -104,6 +104,8 @@ def state_lock():
     Opened read-only: flock does not need write access, so a lock file
     created by root with the service umask still works for the service."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    # 0664 is intended (not a leak): the lock file holds no data; group-write lets the
+    # service account and a stray root run share it (see README, State).
     fd = os.open(STATE_DIR / "state.lock", os.O_RDONLY | os.O_CREAT, 0o664)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -127,6 +129,9 @@ def save_state(state):
 
 def _make_readable(path, mode):
     """Best effort; a non-root caller simply cannot, and does not need to."""
+    # Modes passed here (0o2775 dir, 0o664 files) are intended: the state directory is
+    # setgid to the service group and its files are group-writable, world-readable
+    # (applet reads) so root and the service account can both write (see README, State).
     try:
         os.chmod(path, mode)
     except OSError:
