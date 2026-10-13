@@ -284,6 +284,18 @@ class AutoRegister(unittest.TestCase):
         self.assertEqual(registry.open_tenure(self.s, "BAT1")["pack"], "Delta")
         self.assertEqual(self.s["packs"]["Delta"]["fingerprint"], GENUINE)
 
+    def test_a_benched_pack_with_no_fingerprint_is_asked_about_not_registered(self):
+        # Bravo is a known pack on the bench whose ePPID was never learned (its
+        # identity read failed earlier). A genuine pack going in could be Bravo,
+        # so naming it a brand-new pack would invent a phantom.
+        tick(self.s, 240, BAT0=bat(model=MODEL))
+        registry.note_absent(self.s, "BAT1", 200.0)
+        self.s["packs"]["Bravo"] = dict(self.s["packs"]["Alpha"], label="Bravo", fingerprint=None,
+                                        identity_unreadable=True)
+        self.insert(eppid=GENUINE, model=MODEL)
+        self.assertEqual(sorted(self.s["packs"]), ["Alpha", "Bravo"])
+        self.assertIn("BAT1", self.s["pending"])
+
     def test_a_known_pack_is_never_registered_twice(self):
         registry.note_absent(self.s, "BAT0", 200.0)
         for i in range(4):
