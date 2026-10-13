@@ -451,6 +451,15 @@ def plausible_dell_eppid(fp, model):
     return part.isalnum() and part in model.replace(" ", "").upper()
 
 
+def _unfingerprinted_on_bench(state):
+    """Known, live packs out of both slots whose ePPID was never learned (or
+    was dropped as unreadable). A new ePPID in a slot could be any of them, so
+    it is asked about rather than registered as a pack that does not exist."""
+    in_slots = packs_in_slots(state)
+    return [n for n, p in state["packs"].items()
+            if not p["retired"] and n not in in_slots and not p.get("fingerprint")]
+
+
 def _auto_name(state):
     for n in AUTO_NAMES:
         if n not in state["packs"]:
@@ -544,6 +553,7 @@ def resolve_identities(state, ids, bench_temp_c=25.0):
             if owner and owner not in packs_in_slots(state):
                 assign(state, b, owner, bench_temp_c=bench_temp_c, how="identity")
             elif (not any(p.get("fingerprint") == fp for p in state["packs"].values())
+                  and not _unfingerprinted_on_bench(state)
                   and plausible_dell_eppid(fp, ident["slots"][b].get("model"))):
                 name = _auto_name(state)
                 assign(state, b, name, new=True, bench_temp_c=bench_temp_c, how="new")
